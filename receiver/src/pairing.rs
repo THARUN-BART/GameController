@@ -1,6 +1,7 @@
 use qrcode::render::unicode::Dense1x2;
 use qrcode::QrCode;
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
@@ -34,6 +35,7 @@ pub struct PairingManager {
     current_token: String,
     token_expires_at: u64,
     ttl_seconds: u64,
+    active_peer: Option<SocketAddr>,
 }
 
 impl PairingManager {
@@ -45,9 +47,42 @@ impl PairingManager {
             current_token: String::new(),
             token_expires_at: 0,
             ttl_seconds: DEFAULT_TOKEN_TTL_SECONDS,
+            active_peer: None,
         };
         manager.refresh_token();
         manager
+    }
+
+    /// Attempts to acquire the active gamepad session lock for a peer address.
+    /// If another peer is already active from a different IP, returns false to prevent hijacking.
+    /// If the same IP reconnects (even on a different dynamic client port), acquisition succeeds.
+    pub fn acquire_session(&mut self, peer: SocketAddr) -> bool {
+        match self.active_peer {
+            Some(existing) if existing.ip() != peer.ip() => false,
+            _ => {
+                self.active_peer = Some(peer);
+                true
+            }
+        }
+    }
+
+    /// Releases the active session lock when a client disconnects.
+    pub fn release_session(&mut self, peer: SocketAddr) {
+        if let Some(existing) = self.active_peer {
+            if existing == peer || existing.ip() == peer.ip() {
+                self.active_peer = None;
+            }
+        }
+    }
+
+    /// Returns true if an active gamepad session currently holds the lock.
+    pub fn is_session_active(&self) -> bool {
+        self.active_peer.is_some()
+    }
+
+    /// Returns the currently active peer socket address, if any.
+    pub fn active_peer(&self) -> Option<SocketAddr> {
+        self.active_peer
     }
 
     /// Generates a fresh, cryptographically strong UUIDv4 pairing token and expiration.

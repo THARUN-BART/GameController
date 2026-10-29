@@ -239,6 +239,29 @@ impl ReceiverServer {
                     return;
                 }
 
+                // Check and acquire single-client session lock
+                drop(mgr);
+                let session_acquired = {
+                    let mut mgr = pairing_mgr.lock().await;
+                    mgr.acquire_session(peer_addr)
+                };
+
+                if !session_acquired {
+                    eprintln!(
+                        "[AUTH] Rejected connection from {}: Receiver is already engaged with another active gamepad session.",
+                        peer_addr
+                    );
+                    let rej = ServerMessage::PairAck {
+                        success: false,
+                        message: "Receiver is currently in use by another gamepad session.".to_string(),
+                        server_name,
+                        version: PROTOCOL_VERSION,
+                    };
+                    let _ = write.send(Message::Text(serde_json::to_string(&rej).unwrap().into())).await;
+                    let _ = write.close().await;
+                    return;
+                }
+
                 // Authentication Successful!
                 println!(
                     "[AUTH] Client '{}' ({}) authenticated successfully!",
@@ -252,6 +275,8 @@ impl ReceiverServer {
                 };
                 if let Err(e) = write.send(Message::Text(serde_json::to_string(&ack).unwrap().into())).await {
                     eprintln!("[AUTH] Failed to send PairAck to {}: {}", peer_addr, e);
+                    let mut mgr = pairing_mgr.lock().await;
+                    mgr.release_session(peer_addr);
                     return;
                 }
                 client_name
@@ -268,112 +293,146 @@ impl ReceiverServer {
             }
         };
 
-        // 3. Authenticated Session Loop
+        // 3. Authenticated Session Loop with Inactivity Watchdog
         println!("[SESSION] Session active for '{}' ({})", client_name, peer_addr);
 
-        while let Some(msg) = read.next().await {
-            match msg {
-                Ok(Message::Text(text)) => {
-                    match serde_json::from_str::<ClientMessage>(&text) {
-                        Ok(ClientMessage::Ping { ts }) => {
-                            let now_ms = SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_millis() as u64;
-                            let pong = ServerMessage::Pong {
-                                client_ts: ts,
-                                server_ts: now_ms,
-                            };
-                            if let Ok(json) = serde_json::to_string(&pong) {
-                                if let Err(e) = write.send(Message::Text(json.into())).await {
-                                    eprintln!("[WEBSOCKET] Failed to send Pong to {}: {}", peer_addr, e);
+        const WATCHDOG_TIMEOUT_SECS: u64 = 4;
+        let mut inactive_watchdog_tripped = false;
+
+        loop {
+            let next_item = timeout(Duration::from_secs(WATCHDOG_TIMEOUT_SECS), read.next()).await;
+
+            match next_item {
+                Err(_) => {
+                    // 4 seconds without any input or ping from client -> neutralize controller
+                    if !inactive_watchdog_tripped {
+                        println!(
+                            "[WATCHDOG] Inactive for >{}s from '{}' ({}): Gamepad neutralized for game safety.",
+                            WATCHDOG_TIMEOUT_SECS, client_name, peer_addr
+                        );
+                        let mut state = controller_st.lock().await;
+                        state.reset();
+                        let mut vpad = virtual_pad.lock().await;
+                        vpad.reset();
+                        inactive_watchdog_tripped = true;
+                    }
+                    continue;
+                }
+                Ok(None) => {
+                    println!("[SESSION] Client stream ended for '{}' ({})", client_name, peer_addr);
+                    break;
+                }
+                Ok(Some(msg)) => {
+                    inactive_watchdog_tripped = false;
+                    match msg {
+                        Ok(Message::Text(text)) => {
+                            match serde_json::from_str::<ClientMessage>(&text) {
+                                Ok(ClientMessage::Ping { ts }) => {
+                                    let now_ms = SystemTime::now()
+                                        .duration_since(UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_millis() as u64;
+                                    let pong = ServerMessage::Pong {
+                                        client_ts: ts,
+                                        server_ts: now_ms,
+                                    };
+                                    if let Ok(json) = serde_json::to_string(&pong) {
+                                        if let Err(e) = write.send(Message::Text(json.into())).await {
+                                            eprintln!("[WEBSOCKET] Failed to send Pong to {}: {}", peer_addr, e);
+                                            break;
+                                        }
+                                    }
+                                }
+                                Ok(ClientMessage::Input {
+                                    seq,
+                                    ts,
+                                    left_stick,
+                                    right_stick,
+                                    buttons,
+                                }) => {
+                                    let left_x = left_stick.as_ref().map(|s| s.x);
+                                    let left_y = left_stick.as_ref().map(|s| s.y);
+                                    let right_x = right_stick.as_ref().map(|s| s.x);
+                                    let right_y = right_stick.as_ref().map(|s| s.y);
+
+                                    let mut state = controller_st.lock().await;
+                                    let accepted = state.apply_input(
+                                        seq,
+                                        ts,
+                                        left_x,
+                                        left_y,
+                                        right_x,
+                                        right_y,
+                                        &buttons,
+                                    );
+
+                                    if accepted {
+                                        let mut vpad = virtual_pad.lock().await;
+                                        vpad.update(&state);
+
+                                        if seq % 240 == 0 && seq > 0 {
+                                            println!(
+                                                "[INPUT] Packet #{} from '{}': buttons={:?}, L=({:.2},{:.2}), R=({:.2},{:.2})",
+                                                seq,
+                                                client_name,
+                                                state.pressed_buttons,
+                                                state.left_stick_x,
+                                                state.left_stick_y,
+                                                state.right_stick_x,
+                                                state.right_stick_y
+                                            );
+                                        }
+                                    }
+                                }
+                                Ok(ClientMessage::Disconnect { reason }) => {
+                                    println!(
+                                        "[SESSION] Client '{}' ({}) disconnected intentionally: {:?}",
+                                        client_name, peer_addr, reason
+                                    );
                                     break;
                                 }
-                            }
-                        }
-                        Ok(ClientMessage::Input {
-                            seq,
-                            ts,
-                            left_stick,
-                            right_stick,
-                            buttons,
-                        }) => {
-                            let left_x = left_stick.as_ref().map(|s| s.x);
-                            let left_y = left_stick.as_ref().map(|s| s.y);
-                            let right_x = right_stick.as_ref().map(|s| s.x);
-                            let right_y = right_stick.as_ref().map(|s| s.y);
-
-                            let mut state = controller_st.lock().await;
-                            let accepted = state.apply_input(
-                                seq,
-                                ts,
-                                left_x,
-                                left_y,
-                                right_x,
-                                right_y,
-                                &buttons,
-                            );
-
-                            if accepted {
-                                let mut vpad = virtual_pad.lock().await;
-                                vpad.update(&state);
-
-                                if seq % 240 == 0 && seq > 0 {
-                                    println!(
-                                        "[INPUT] Packet #{} from '{}': buttons={:?}, L=({:.2},{:.2}), R=({:.2},{:.2})",
-                                        seq,
-                                        client_name,
-                                        state.pressed_buttons,
-                                        state.left_stick_x,
-                                        state.left_stick_y,
-                                        state.right_stick_x,
-                                        state.right_stick_y
-                                    );
+                                Ok(ClientMessage::Pair { .. }) => {
+                                    // Already paired; respond with ack
+                                    let mgr = pairing_mgr.lock().await;
+                                    let ack = ServerMessage::PairAck {
+                                        success: true,
+                                        message: "Already authenticated".to_string(),
+                                        server_name: mgr.server_name().to_string(),
+                                        version: PROTOCOL_VERSION,
+                                    };
+                                    let _ = write.send(Message::Text(serde_json::to_string(&ack).unwrap().into())).await;
+                                }
+                                Err(e) => {
+                                    eprintln!("[SESSION] Invalid message format from {}: {}", peer_addr, e);
                                 }
                             }
                         }
-                        Ok(ClientMessage::Disconnect { reason }) => {
-                            println!(
-                                "[SESSION] Client '{}' ({}) disconnected intentionally: {:?}",
-                                client_name, peer_addr, reason
-                            );
+                        Ok(Message::Close(_)) => {
+                            println!("[SESSION] Client '{}' ({}) disconnected cleanly.", client_name, peer_addr);
                             break;
                         }
-                        Ok(ClientMessage::Pair { .. }) => {
-                            // Already paired; respond with ack
-                            let mgr = pairing_mgr.lock().await;
-                            let ack = ServerMessage::PairAck {
-                                success: true,
-                                message: "Already authenticated".to_string(),
-                                server_name: mgr.server_name().to_string(),
-                                version: PROTOCOL_VERSION,
-                            };
-                            let _ = write.send(Message::Text(serde_json::to_string(&ack).unwrap().into())).await;
-                        }
+                        Ok(_) => {}
                         Err(e) => {
-                            eprintln!("[SESSION] Invalid message format from {}: {}", peer_addr, e);
+                            eprintln!("[SESSION] Connection error with '{}' ({}): {}", client_name, peer_addr, e);
+                            break;
                         }
                     }
-                }
-                Ok(Message::Close(_)) => {
-                    println!("[SESSION] Client '{}' ({}) disconnected cleanly.", client_name, peer_addr);
-                    break;
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    eprintln!("[SESSION] Connection error with '{}' ({}): {}", client_name, peer_addr, e);
-                    break;
                 }
             }
         }
 
-        // 4. Safety Guarantee: reset all inputs upon client disconnect
+        // 4. Safety Guarantee & Session Cleanup
+        {
+            let mut mgr = pairing_mgr.lock().await;
+            mgr.release_session(peer_addr);
+        }
+
         let mut state = controller_st.lock().await;
         state.reset();
         let mut vpad = virtual_pad.lock().await;
         vpad.reset();
         println!(
-            "[CONTROLLER] Controller state reset to neutral after '{}' ({}) disconnected.",
+            "[CONTROLLER] Controller state neutralized and session released for '{}' ({}).",
             client_name, peer_addr
         );
     }

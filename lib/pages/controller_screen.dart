@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../models/connection_info.dart';
 import '../providers/connection_provider.dart';
 import '../providers/controller_provider.dart';
 import '../providers/layout_provider.dart';
@@ -24,6 +25,7 @@ class _ControllerScreenState extends ConsumerState<ControllerScreen> {
   late final ControllerNotifier _controllerNotifier;
   late final EditModeNotifier _editModeNotifier;
   late final WebSocketService _webSocketService;
+  bool _isFailureDialogShowing = false;
 
   @override
   void initState() {
@@ -65,8 +67,60 @@ class _ControllerScreenState extends ConsumerState<ControllerScreen> {
     _controllerNotifier.releaseButton(btn);
   }
 
+  void _showConnectionFailedDialog(BuildContext context, String? errorMessage) {
+    if (_isFailureDialogShowing) return;
+    _isFailureDialogShowing = true;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.wifi_off_rounded, color: Color(0xFFEF4444)),
+            SizedBox(width: 10),
+            Text('Connection Lost', style: TextStyle(color: Colors.white, fontSize: 18)),
+          ],
+        ),
+        content: Text(
+          errorMessage ?? 'Lost communication with the PC receiver.',
+          style: const TextStyle(color: Colors.white70, fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              _isFailureDialogShowing = false;
+              Navigator.of(ctx).pop();
+              Navigator.of(context).pop();
+            },
+            child: const Text('Back to Home', style: TextStyle(color: Colors.white54)),
+          ),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xFF0284C7)),
+            icon: const Icon(Icons.refresh_rounded, size: 16),
+            label: const Text('Retry'),
+            onPressed: () {
+              _isFailureDialogShowing = false;
+              Navigator.of(ctx).pop();
+              _webSocketService.retryReconnect();
+            },
+          ),
+        ],
+      ),
+    ).then((_) => _isFailureDialogShowing = false);
+  }
+
   @override
   Widget build(BuildContext context) {
+    // Listen for connection failures to surface action dialog
+    ref.listen<ConnectionInfo>(connectionProvider, (previous, next) {
+      if (next.status == ConnectionStatus.failed && mounted) {
+        _showConnectionFailedDialog(context, next.errorMessage);
+      }
+    });
+
     // NOTE: We deliberately DO NOT watch controllerProvider here!
     // Watching controllerProvider at root caused 120 FPS rebuilds on every thumb move.
     final layout = ref.watch(layoutProvider);
@@ -339,6 +393,60 @@ class _ControllerScreenState extends ConsumerState<ControllerScreen> {
                         },
                       ),
                     ),
+
+                  // Floating Reconnecting Top Alert Banner
+                  Consumer(
+                    builder: (context, ref, _) {
+                      final conn = ref.watch(connectionProvider);
+                      if (conn.status != ConnectionStatus.reconnecting) {
+                        return const SizedBox.shrink();
+                      }
+                      return Positioned(
+                        top: 10,
+                        left: 0,
+                        right: 0,
+                        child: Center(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF78350F).withValues(alpha: 0.95),
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(color: const Color(0xFFF59E0B), width: 1.5),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: const Color(0xFFF59E0B).withValues(alpha: 0.35),
+                                  blurRadius: 10,
+                                  spreadRadius: 2,
+                                ),
+                              ],
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Color(0xFFFDE68A),
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Text(
+                                  'Reconnecting to PC... (${conn.reconnectAttempt}/${conn.maxReconnectAttempts})',
+                                  style: const TextStyle(
+                                    color: Color(0xFFFDE68A),
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
 
                   // Edit Mode Floating Button (when not in edit mode)
                   if (!isEditMode)

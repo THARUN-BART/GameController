@@ -21,6 +21,8 @@ class ConnectionInfo {
   final int latencyMs;
   final String? errorMessage;
   final QrPayload? lastPayload;
+  final int reconnectAttempt;
+  final int maxReconnectAttempts;
 
   const ConnectionInfo({
     this.status = ConnectionStatus.disconnected,
@@ -31,11 +33,14 @@ class ConnectionInfo {
     this.latencyMs = 0,
     this.errorMessage,
     this.lastPayload,
+    this.reconnectAttempt = 0,
+    this.maxReconnectAttempts = 5,
   });
 
   bool get isConnected => status == ConnectionStatus.connected;
   bool get isConnecting =>
       status == ConnectionStatus.connecting || status == ConnectionStatus.pairing;
+  bool get isReconnecting => status == ConnectionStatus.reconnecting;
 
   String get displayStatus {
     switch (status) {
@@ -50,7 +55,7 @@ class ConnectionInfo {
       case ConnectionStatus.connected:
         return 'Connected';
       case ConnectionStatus.reconnecting:
-        return 'Reconnecting...';
+        return 'Reconnecting ($reconnectAttempt/$maxReconnectAttempts)...';
       case ConnectionStatus.failed:
         return 'Connection Failed';
     }
@@ -65,6 +70,8 @@ class ConnectionInfo {
     int? latencyMs,
     String? errorMessage,
     QrPayload? lastPayload,
+    int? reconnectAttempt,
+    int? maxReconnectAttempts,
   }) {
     return ConnectionInfo(
       status: status ?? this.status,
@@ -75,6 +82,8 @@ class ConnectionInfo {
       latencyMs: latencyMs ?? this.latencyMs,
       errorMessage: errorMessage ?? this.errorMessage,
       lastPayload: lastPayload ?? this.lastPayload,
+      reconnectAttempt: reconnectAttempt ?? this.reconnectAttempt,
+      maxReconnectAttempts: maxReconnectAttempts ?? this.maxReconnectAttempts,
     );
   }
 }

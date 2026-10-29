@@ -12,6 +12,15 @@ class ConnectionNotifier extends Notifier<ConnectionInfo> {
     state = state.copyWith(status: status, errorMessage: errorMessage);
   }
 
+  void setReconnecting(int attempt, int maxAttempts) {
+    state = state.copyWith(
+      status: ConnectionStatus.reconnecting,
+      reconnectAttempt: attempt,
+      maxReconnectAttempts: maxAttempts,
+      errorMessage: null,
+    );
+  }
+
   void applyQrPayload(QrPayload payload) {
     state = state.copyWith(
       status: ConnectionStatus.connecting,
@@ -21,6 +30,7 @@ class ConnectionNotifier extends Notifier<ConnectionInfo> {
       pairingToken: payload.token,
       lastPayload: payload,
       errorMessage: null,
+      reconnectAttempt: 0,
     );
   }
 
@@ -37,17 +47,23 @@ class ConnectionNotifier extends Notifier<ConnectionInfo> {
       serverName: serverName ?? 'Windows Gamepad Receiver',
       pairingToken: pairingToken,
       errorMessage: null,
+      reconnectAttempt: 0,
     );
   }
 
   void updateLatency(int ms) {
-    state = state.copyWith(latencyMs: ms);
+    // Smooth latency jitter via exponential moving average (EMA alpha = 0.3)
+    final smoothed = state.latencyMs == 0
+        ? ms
+        : ((0.3 * ms) + (0.7 * state.latencyMs)).round();
+    state = state.copyWith(latencyMs: smoothed);
   }
 
   void disconnect() {
     state = state.copyWith(
       status: ConnectionStatus.disconnected,
       errorMessage: null,
+      reconnectAttempt: 0,
     );
   }
 }

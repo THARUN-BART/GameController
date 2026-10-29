@@ -133,5 +133,54 @@ void main() {
       final buttons = json['buttons'] as List;
       expect(buttons, containsAll(['CROSS', 'R1', 'L2']));
     });
+
+    test('Reconnection state transitions track attempts and backoff correctly', () {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+
+      final notifier = container.read(connectionProvider.notifier);
+      notifier.setConnected(host: '192.168.1.50', port: 8080, pairingToken: 'token123');
+
+      expect(container.read(connectionProvider).isConnected, isTrue);
+
+      // Transition to reconnecting attempt 1 of 5
+      notifier.setReconnecting(1, 5);
+      var state = container.read(connectionProvider);
+      expect(state.status, equals(ConnectionStatus.reconnecting));
+      expect(state.isReconnecting, isTrue);
+      expect(state.reconnectAttempt, equals(1));
+      expect(state.maxReconnectAttempts, equals(5));
+      expect(state.displayStatus, equals('Reconnecting (1/5)...'));
+
+      // Advance to attempt 3 of 5
+      notifier.setReconnecting(3, 5);
+      state = container.read(connectionProvider);
+      expect(state.reconnectAttempt, equals(3));
+      expect(state.displayStatus, equals('Reconnecting (3/5)...'));
+
+      // Reconnection success restores connected status and resets attempt count
+      notifier.setConnected(host: '192.168.1.50', port: 8080, pairingToken: 'token123');
+      state = container.read(connectionProvider);
+      expect(state.status, equals(ConnectionStatus.connected));
+      expect(state.reconnectAttempt, equals(0));
+      expect(state.displayStatus, equals('Connected'));
+    });
+
+    test('Reconnection failure sets failed status with descriptive error message', () {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+
+      final notifier = container.read(connectionProvider.notifier);
+      notifier.setReconnecting(5, 5);
+      notifier.setStatus(
+        ConnectionStatus.failed,
+        errorMessage: 'Connection lost to PC. Reconnection attempts (5) timed out.',
+      );
+
+      final state = container.read(connectionProvider);
+      expect(state.status, equals(ConnectionStatus.failed));
+      expect(state.errorMessage, contains('Reconnection attempts (5) timed out'));
+      expect(state.displayStatus, equals('Connection Failed'));
+    });
   });
 }
