@@ -422,18 +422,26 @@ impl ReceiverServer {
         }
 
         // 4. Safety Guarantee & Session Cleanup
-        {
+        let should_neutralize = {
             let mut mgr = pairing_mgr.lock().await;
             mgr.release_session(peer_addr);
-        }
+            !mgr.is_session_active()
+        };
 
-        let mut state = controller_st.lock().await;
-        state.reset();
-        let mut vpad = virtual_pad.lock().await;
-        vpad.reset();
-        println!(
-            "[CONTROLLER] Controller state neutralized and session released for '{}' ({}).",
-            client_name, peer_addr
-        );
+        if should_neutralize {
+            let mut state = controller_st.lock().await;
+            state.reset();
+            let mut vpad = virtual_pad.lock().await;
+            vpad.reset();
+            println!(
+                "[CONTROLLER] Controller state neutralized and session released for '{}' ({}).",
+                client_name, peer_addr
+            );
+        } else {
+            println!(
+                "[SESSION] Cleaned up previous session for '{}' ({}) while active session continues.",
+                client_name, peer_addr
+            );
+        }
     }
 }

@@ -395,17 +395,17 @@ class _ControllerScreenState extends ConsumerState<ControllerScreen> {
                     ),
 
                   // Floating Reconnecting Top Alert Banner
-                  Consumer(
-                    builder: (context, ref, _) {
-                      final conn = ref.watch(connectionProvider);
-                      if (conn.status != ConnectionStatus.reconnecting) {
-                        return const SizedBox.shrink();
-                      }
-                      return Positioned(
-                        top: 10,
-                        left: 0,
-                        right: 0,
-                        child: Center(
+                  Positioned(
+                    top: 10,
+                    left: 0,
+                    right: 0,
+                    child: Consumer(
+                      builder: (context, ref, _) {
+                        final conn = ref.watch(connectionProvider);
+                        if (conn.status != ConnectionStatus.reconnecting) {
+                          return const SizedBox.shrink();
+                        }
+                        return Center(
                           child: Container(
                             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
                             decoration: BoxDecoration(
@@ -443,9 +443,9 @@ class _ControllerScreenState extends ConsumerState<ControllerScreen> {
                               ],
                             ),
                           ),
-                        ),
-                      );
-                    },
+                        );
+                      },
+                    ),
                   ),
 
                   // Edit Mode Floating Button (when not in edit mode)
