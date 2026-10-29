@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/connection_info.dart';
+import '../models/qr_payload.dart';
 
 class ConnectionNotifier extends Notifier<ConnectionInfo> {
   @override
@@ -11,16 +12,30 @@ class ConnectionNotifier extends Notifier<ConnectionInfo> {
     state = state.copyWith(status: status, errorMessage: errorMessage);
   }
 
+  void applyQrPayload(QrPayload payload) {
+    state = state.copyWith(
+      status: ConnectionStatus.connecting,
+      host: payload.host,
+      port: payload.port,
+      serverName: payload.serverName,
+      pairingToken: payload.token,
+      lastPayload: payload,
+      errorMessage: null,
+    );
+  }
+
   void setConnected({
     required String host,
     required int port,
     String? serverName,
+    String? pairingToken,
   }) {
     state = state.copyWith(
       status: ConnectionStatus.connected,
       host: host,
       port: port,
       serverName: serverName ?? 'Windows Gamepad Receiver',
+      pairingToken: pairingToken,
       errorMessage: null,
     );
   }
@@ -42,7 +57,8 @@ class ConnectionNotifier extends Notifier<ConnectionInfo> {
       host: '192.168.1.100',
       port: 8080,
       serverName: 'Gaming-PC (Simulated)',
-      latencyMs: 14,
+      pairingToken: 'simulated_sec_token_8899',
+      latencyMs: 12,
     );
   }
 }

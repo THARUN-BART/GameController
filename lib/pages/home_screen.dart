@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../models/connection_info.dart';
+import '../models/qr_payload.dart';
 import '../providers/connection_provider.dart';
 import '../widgets/connection_indicator.dart';
 import 'controller_screen.dart';
@@ -15,18 +16,19 @@ class HomeScreen extends ConsumerStatefulWidget {
 }
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
-  // Recent devices history for convenience
   final List<Map<String, dynamic>> _recentDevices = [
     {
       'name': 'Desktop-Rig (Primary)',
       'ip': '192.168.1.105',
       'port': 8080,
+      'token': 'mock_token_abc123',
       'lastConnected': 'Yesterday',
     },
     {
       'name': 'Gaming-Laptop',
       'ip': '192.168.1.120',
       'port': 8080,
+      'token': 'mock_token_xyz789',
       'lastConnected': '3 days ago',
     },
   ];
@@ -36,31 +38,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     if (!mounted) return;
 
     if (status.isGranted) {
-      ref
-          .read(connectionProvider.notifier)
-          .setStatus(ConnectionStatus.scanning);
+      ref.read(connectionProvider.notifier).setStatus(ConnectionStatus.scanning);
 
-      final qrResult = await Navigator.of(context).push<String>(
+      final result = await Navigator.of(context).push<QrPayload>(
         MaterialPageRoute(builder: (context) => const QrScannerScreen()),
       );
 
       if (!mounted) return;
 
-      if (qrResult != null && qrResult.isNotEmpty) {
-        // In Phase 2 this will parse the JSON payload and execute the handshake
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Scanned QR Payload: $qrResult'),
-            backgroundColor: const Color(0xFF0284C7),
-          ),
-        );
-        ref
-            .read(connectionProvider.notifier)
-            .setStatus(ConnectionStatus.disconnected);
+      if (result != null) {
+        _showPairingConfirmationSheet(result);
       } else {
-        ref
-            .read(connectionProvider.notifier)
-            .setStatus(ConnectionStatus.disconnected);
+        ref.read(connectionProvider.notifier).setStatus(ConnectionStatus.disconnected);
       }
     } else if (status.isPermanentlyDenied) {
       _showPermissionDialog();
@@ -72,6 +61,130 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ),
       );
     }
+  }
+
+  void _showPairingConfirmationSheet(QrPayload payload) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF131B2E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) {
+        return Padding(
+          padding: EdgeInsets.only(
+            left: 24,
+            right: 24,
+            top: 24,
+            bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.cyanAccent.withValues(alpha: 0.15),
+                    ),
+                    child: const Icon(
+                      Icons.verified_user_rounded,
+                      color: Colors.cyanAccent,
+                      size: 26,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          payload.serverName,
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        const Text(
+                          'Valid Pairing QR Code Verified',
+                          style: TextStyle(fontSize: 12, color: Colors.greenAccent),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF0F172A),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.white12),
+                ),
+                child: Column(
+                  children: [
+                    _InfoRow(label: 'Target Host', value: payload.host),
+                    const Divider(color: Colors.white12, height: 16),
+                    _InfoRow(label: 'WebSocket Port', value: '${payload.port}'),
+                    const Divider(color: Colors.white12, height: 16),
+                    _InfoRow(
+                      label: 'Protocol Version',
+                      value: 'v${payload.version}',
+                    ),
+                    const Divider(color: Colors.white12, height: 16),
+                    _InfoRow(
+                      label: 'Pairing Token',
+                      value: '${payload.token.substring(0, 4)}...${payload.token.substring(payload.token.length - 4)}',
+                    ),
+                    const Divider(color: Colors.white12, height: 16),
+                    _InfoRow(
+                      label: 'Expires In',
+                      value: '${payload.remainingSeconds}s',
+                      valueColor: Colors.amberAccent,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 24),
+              FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: Colors.cyanAccent,
+                  foregroundColor: Colors.black,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  // Apply QR payload to provider state
+                  ref.read(connectionProvider.notifier).applyQrPayload(payload);
+                  ref.read(connectionProvider.notifier).setConnected(
+                        host: payload.host,
+                        port: payload.port,
+                        serverName: payload.serverName,
+                        pairingToken: payload.token,
+                      );
+                  _openGamepad();
+                },
+                icon: const Icon(Icons.link_rounded),
+                label: const Text(
+                  'Accept & Connect Gamepad',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   void _showPermissionDialog() {
@@ -167,11 +280,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 final port = int.parse(portController.text.trim());
                 Navigator.pop(context);
 
-                // Set simulated connected info for testing Phase 1
+                final manualPayload = QrPayload(
+                  version: QrPayload.currentVersion,
+                  app: QrPayload.appIdentifier,
+                  host: ip,
+                  port: port,
+                  token: 'manual_token_${DateTime.now().millisecondsSinceEpoch}',
+                  expiresAt: (DateTime.now().millisecondsSinceEpoch ~/ 1000) + 3600,
+                  serverName: 'PC ($ip)',
+                );
+
+                ref.read(connectionProvider.notifier).applyQrPayload(manualPayload);
                 ref.read(connectionProvider.notifier).setConnected(
                       host: ip,
                       port: port,
                       serverName: 'PC ($ip)',
+                      pairingToken: manualPayload.token,
                     );
 
                 ScaffoldMessenger.of(context).showSnackBar(
@@ -496,6 +620,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                                 host: dev['ip'],
                                 port: dev['port'],
                                 serverName: dev['name'],
+                                pairingToken: dev['token'],
                               );
                           _openGamepad();
                         },
@@ -507,6 +632,37 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _InfoRow extends StatelessWidget {
+  final String label;
+  final String value;
+  final Color? valueColor;
+
+  const _InfoRow({
+    required this.label,
+    required this.value,
+    this.valueColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(label, style: const TextStyle(fontSize: 13, color: Colors.white60)),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.bold,
+            color: valueColor ?? Colors.white,
+            fontFamily: 'monospace',
+          ),
+        ),
+      ],
     );
   }
 }
