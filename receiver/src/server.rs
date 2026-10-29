@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
 use tokio::time::{timeout, Duration};
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
@@ -301,6 +301,10 @@ impl ReceiverServer {
             vpad.subscribe_rumble()
         };
 
+        let mut last_large: u8 = 0;
+        let mut last_small: u8 = 0;
+        let mut last_rumble_send = tokio::time::Instant::now();
+
         const WATCHDOG_TIMEOUT_SECS: u64 = 4;
         let mut inactive_watchdog_tripped = false;
         let sleep_timeout = tokio::time::sleep(Duration::from_secs(WATCHDOG_TIMEOUT_SECS));
@@ -309,11 +313,34 @@ impl ReceiverServer {
         loop {
             tokio::select! {
                 // Incoming game force feedback / rumble notification from PC game via ViGEmBus
-                Ok((large, small)) = rumble_rx.recv() => {
-                    let rumble_msg = ServerMessage::Rumble { large, small };
-                    if let Ok(json) = serde_json::to_string(&rumble_msg) {
-                        if let Err(e) = write.send(Message::Text(json.into())).await {
-                            eprintln!("[RUMBLE] Failed to send rumble packet to {}: {}", peer_addr, e);
+                rumble_item = rumble_rx.recv() => {
+                    match rumble_item {
+                        Ok((large, small)) => {
+                            let changed = (large as i16 - last_large as i16).abs() >= 8
+                                || (small as i16 - last_small as i16).abs() >= 8
+                                || (large == 0 && small == 0 && (last_large != 0 || last_small != 0))
+                                || (last_large == 0 && last_small == 0 && (large != 0 || small != 0));
+                            let keepalive = (large > 0 || small > 0) && last_rumble_send.elapsed() >= Duration::from_millis(250);
+
+                            if changed || keepalive {
+                                last_large = large;
+                                last_small = small;
+                                last_rumble_send = tokio::time::Instant::now();
+
+                                println!("[RUMBLE] Game force feedback -> Phone: large={}, small={}", large, small);
+                                let rumble_msg = ServerMessage::Rumble { large, small };
+                                if let Ok(json) = serde_json::to_string(&rumble_msg) {
+                                    if let Err(e) = write.send(Message::Text(json.into())).await {
+                                        eprintln!("[RUMBLE] Failed to send rumble packet to {}: {}", peer_addr, e);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            eprintln!("[RUMBLE] Warning: Receiver lagged, skipped {} rumble frames", skipped);
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
                             break;
                         }
                     }

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/connection_info.dart';
+import '../services/haptic_service.dart';
 
 class ConnectionIndicator extends StatelessWidget {
   final ConnectionInfo connection;
@@ -40,57 +41,62 @@ class ConnectionIndicator extends StatelessWidget {
     final statusColor = _getStatusColor();
 
     if (compact) {
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(16),
-          color: const Color(0xFF0F172A).withValues(alpha: 0.8),
-          border: Border.all(color: statusColor.withValues(alpha: 0.4), width: 1),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 8,
-              height: 8,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: statusColor,
-                boxShadow: [
-                  BoxShadow(
-                    color: statusColor.withValues(alpha: 0.8),
-                    blurRadius: 6,
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 8),
-            Text(
-              connection.displayStatus,
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                color: statusColor,
-              ),
-            ),
-            if (connection.isConnected) ...[
-              const SizedBox(width: 8),
+      return GestureDetector(
+        onTap: () {
+          HapticService.instance.testBuzz(durationMs: 150, strength: 1.0);
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            color: const Color(0xFF0F172A).withValues(alpha: 0.8),
+            border: Border.all(color: statusColor.withValues(alpha: 0.4), width: 1),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
               Container(
-                width: 1,
-                height: 12,
-                color: Colors.white24,
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: statusColor,
+                  boxShadow: [
+                    BoxShadow(
+                      color: statusColor.withValues(alpha: 0.8),
+                      blurRadius: 6,
+                    ),
+                  ],
+                ),
               ),
               const SizedBox(width: 8),
               Text(
-                '${connection.latencyMs} ms',
+                connection.displayStatus,
                 style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.bold,
-                  color: _getLatencyColor(connection.latencyMs),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: statusColor,
                 ),
               ),
+              if (connection.isConnected) ...[
+                const SizedBox(width: 8),
+                Container(
+                  width: 1,
+                  height: 12,
+                  color: Colors.white24,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  '${connection.latencyMs} ms',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: _getLatencyColor(connection.latencyMs),
+                  ),
+                ),
+              ],
             ],
-          ],
+          ),
         ),
       );
     }

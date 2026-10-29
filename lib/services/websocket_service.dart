@@ -1,12 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/connection_info.dart';
 import '../models/controller_state.dart';
 import '../providers/connection_provider.dart';
-import 'package:flutter/services.dart';
+import 'haptic_service.dart';
 
 /// Service responsible for the low-latency WebSocket link, token authentication handshake,
 /// heartbeat ping/pong latency measurement, controller input streaming, and automatic reconnection.
@@ -30,7 +32,9 @@ class WebSocketService {
   int _reconnectAttempt = 0;
   static const int maxReconnectAttempts = 5;
 
-  WebSocketService(this._ref);
+  WebSocketService(this._ref) {
+    HapticService.instance.init();
+  }
 
   bool get isConnected =>
       _ref.read(connectionProvider).status == ConnectionStatus.connected;
@@ -160,6 +164,7 @@ class WebSocketService {
                   pairingToken: token,
                 );
             _startHeartbeat();
+            HapticService.instance.testBuzz(durationMs: 80, strength: 0.8);
             if (_handshakeCompleter != null && !_handshakeCompleter!.isCompleted) {
               _handshakeCompleter!.complete(true);
             }
@@ -177,10 +182,10 @@ class WebSocketService {
           }
           break;
         case 'rumble':
-        final large=json['large'] as int? ?? 0;
-        final small=json['dmall'] as int? ?? 0;
-        _triggerHaptics(large, small);
-        break;
+          final large = json['large'] as int? ?? 0;
+          final small = json['small'] as int? ?? 0;
+          HapticService.instance.triggerRumble(large, small);
+          break;
 
 
         case 'pong':
@@ -350,6 +355,7 @@ class WebSocketService {
 
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
+    HapticService.instance.cancel();
 
     if (_channel != null) {
       try {
@@ -388,15 +394,3 @@ final webSocketServiceProvider = Provider<WebSocketService>((ref) {
   ref.onDispose(() => service.dispose());
   return service;
 });
-
-void _triggerHaptics(int large,int small){
-  if(large>150){
-    HapticFeedback.heavyImpact();
-  }
-  else if(large>50 || small >120){
-    HapticFeedback.mediumImpact();
-  }
-  else{
-    HapticFeedback.lightImpact();
-  }
-}

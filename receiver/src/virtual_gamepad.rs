@@ -17,7 +17,7 @@ impl VirtualGamepadManager {
     /// Attempts to connect to the ViGEmBus kernel driver and spawn an Xbox 360 controller.
     /// If the driver is not installed on the PC, reports a helpful guide and runs safely without crashing.
     pub fn new() -> Self {
-        let (rumble_tx, _) = broadcast::channel(32);
+        let (rumble_tx, _) = broadcast::channel(256);
 
         match Client::connect() {
             Ok(client) => {
