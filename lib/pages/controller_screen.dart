@@ -3,10 +3,14 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/connection_provider.dart';
 import '../providers/controller_provider.dart';
+import '../providers/layout_provider.dart';
+import '../services/websocket_service.dart';
 import '../widgets/action_buttons.dart';
 import '../widgets/connection_indicator.dart';
+import '../widgets/customizable_wrapper.dart';
+import '../widgets/dpad.dart';
 import '../widgets/joystick.dart';
-import '../widgets/system_buttons.dart';
+import '../widgets/qw_circular_button.dart';
 
 class ControllerScreen extends ConsumerStatefulWidget {
   const ControllerScreen({super.key});
@@ -16,12 +20,19 @@ class ControllerScreen extends ConsumerStatefulWidget {
 }
 
 class _ControllerScreenState extends ConsumerState<ControllerScreen> {
-  bool _showDebugHud = true;
+  // Cache notifiers and services to safely access inside dispose() without using ref
+  late final ControllerNotifier _controllerNotifier;
+  late final EditModeNotifier _editModeNotifier;
+  late final WebSocketService _webSocketService;
 
   @override
   void initState() {
     super.initState();
-    // Lock into landscape mode and enable immersive full-screen
+    _controllerNotifier = ref.read(controllerProvider.notifier);
+    _editModeNotifier = ref.read(editModeProvider.notifier);
+    _webSocketService = ref.read(webSocketServiceProvider);
+
+    // Lock into landscape and immersive full-screen
     SystemChrome.setPreferredOrientations([
       DeviceOrientation.landscapeLeft,
       DeviceOrientation.landscapeRight,
@@ -31,204 +42,335 @@ class _ControllerScreenState extends ConsumerState<ControllerScreen> {
 
   @override
   void dispose() {
-    // Reset inputs immediately when leaving the controller screen
-    ref.read(controllerProvider.notifier).resetAll();
+    // Safely reset states and disconnect WebSocket using cached references
+    _controllerNotifier.resetAll();
+    _editModeNotifier.setEditMode(false);
+    _webSocketService.disconnect(reason: 'exit_gamepad');
 
-    // Restore standard device orientations and system UI
+    // Strictly restore mandatory portrait mode when leaving the controller screen
     SystemChrome.setPreferredOrientations([
       DeviceOrientation.portraitUp,
-      DeviceOrientation.portraitDown,
-      DeviceOrientation.landscapeLeft,
-      DeviceOrientation.landscapeRight,
     ]);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
   }
 
-  void _onButtonDown(String button) {
-    ref.read(controllerProvider.notifier).pressButton(button);
+  void _onButtonDown(String btn) {
+    if (ref.read(editModeProvider)) return;
+    _controllerNotifier.pressButton(btn);
   }
 
-  void _onButtonUp(String button) {
-    ref.read(controllerProvider.notifier).releaseButton(button);
-  }
-
-  void _onJoystickChanged(Offset norm) {
-    ref.read(controllerProvider.notifier).updateStick(norm.dx, norm.dy);
+  void _onButtonUp(String btn) {
+    if (ref.read(editModeProvider)) return;
+    _controllerNotifier.releaseButton(btn);
   }
 
   @override
   Widget build(BuildContext context) {
-    final connection = ref.watch(connectionProvider);
-    final controller = ref.watch(controllerProvider);
+    // NOTE: We deliberately DO NOT watch controllerProvider here!
+    // Watching controllerProvider at root caused 120 FPS rebuilds on every thumb move.
+    final layout = ref.watch(layoutProvider);
+    final isEditMode = ref.watch(editModeProvider);
+
+    final baseColor = layout.primaryColor;
+    final knobColor = layout.knobColor;
+    final s = layout.scale;
+    final isPS = layout.isPlayStation;
+
+    // PlayStation vs Xbox nomenclature
+    final triggerLeftLabel = isPS ? 'L2' : 'LT';
+    final bumperLeftLabel = isPS ? 'L1' : 'LB';
+    final triggerRightLabel = isPS ? 'R2' : 'RT';
+    final bumperRightLabel = isPS ? 'R1' : 'RB';
 
     return Scaffold(
-      backgroundColor: const Color(0xFF090D16),
+      backgroundColor: const Color(0xFF0C0F17), // Sleek PlayStation Dark
       body: SafeArea(
         child: LayoutBuilder(
           builder: (context, constraints) {
-            // Adaptive scaling for different screen dimensions
-            final availableHeight = constraints.maxHeight;
-            final joystickSize = (availableHeight * 0.65).clamp(160.0, 240.0);
-            final clusterSize = (availableHeight * 0.68).clamp(170.0, 250.0);
-
-            return Stack(
-              children: [
-                // Background subtle mesh/grid pattern
-                Positioned.fill(
-                  child: Opacity(
-                    opacity: 0.04,
-                    child: GridPaper(
-                      color: Colors.cyanAccent,
-                      divisions: 2,
-                      subdivisions: 2,
+            return Opacity(
+              opacity: layout.opacity,
+              child: Stack(
+                children: [
+                  // 1. L2 / LT (Left Trigger - Large circle top-left)
+                  CustomizableWrapper(
+                    id: 'lt',
+                    label: triggerLeftLabel,
+                    position: layout.lt,
+                    parentConstraints: constraints,
+                    child: QwCircularButton(
+                      label: triggerLeftLabel,
+                      size: 78 * s,
+                      fontSize: 18 * s,
+                      baseColor: baseColor,
+                      isPressed: false,
+                      onDown: () => _onButtonDown(triggerLeftLabel),
+                      onUp: () => _onButtonUp(triggerLeftLabel),
                     ),
                   ),
-                ),
 
-                // Top Header Bar
-                Positioned(
-                  top: 8,
-                  left: 16,
-                  right: 16,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      // Exit / Back Button
-                      IconButton.filledTonal(
-                        onPressed: () => Navigator.of(context).pop(),
-                        icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
-                        style: IconButton.styleFrom(
-                          backgroundColor: const Color(0xFF1E293B),
-                          foregroundColor: Colors.white70,
-                        ),
-                        tooltip: 'Exit Controller',
-                      ),
+                  // 2. L1 / LB (Left Bumper - Circle slightly inward from trigger)
+                  CustomizableWrapper(
+                    id: 'lb',
+                    label: bumperLeftLabel,
+                    position: layout.lb,
+                    parentConstraints: constraints,
+                    child: QwCircularButton(
+                      label: bumperLeftLabel,
+                      size: 60 * s,
+                      fontSize: 15 * s,
+                      baseColor: baseColor,
+                      isPressed: false,
+                      onDown: () => _onButtonDown(bumperLeftLabel),
+                      onUp: () => _onButtonUp(bumperLeftLabel),
+                    ),
+                  ),
 
-                      // Connection Status & Latency
-                      ConnectionIndicator(
-                        connection: connection,
-                        compact: true,
-                      ),
+                  // 3. D-PAD (Directional Disc bottom-left)
+                  CustomizableWrapper(
+                    id: 'dpad',
+                    label: 'D-PAD',
+                    position: layout.dpad,
+                    parentConstraints: constraints,
+                    child: CircularDpad(
+                      size: 130 * s,
+                      baseColor: baseColor,
+                      onButtonDown: _onButtonDown,
+                      onButtonUp: _onButtonUp,
+                      activeButtons: const {},
+                    ),
+                  ),
 
-                      // Actions: Toggle HUD & Emergency Input Reset
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          IconButton(
-                            onPressed: () {
-                              setState(() {
-                                _showDebugHud = !_showDebugHud;
-                              });
-                            },
-                            icon: Icon(
-                              _showDebugHud
-                                  ? Icons.data_object_rounded
-                                  : Icons.data_object_outlined,
-                              size: 20,
-                              color: _showDebugHud
-                                  ? Colors.cyanAccent
-                                  : Colors.white54,
-                            ),
-                            tooltip: 'Toggle Input Telemetry',
+                  // 4. LEFT STICK (Analog thumbstick bottom left-center)
+                  CustomizableWrapper(
+                    id: 'leftStick',
+                    label: 'STICK L',
+                    position: layout.leftStick,
+                    parentConstraints: constraints,
+                    child: VirtualJoystick(
+                      size: 138 * s,
+                      knobSize: 68 * s,
+                      baseColor: baseColor,
+                      knobColor: knobColor,
+                      onChanged: (offset) {
+                        if (!isEditMode) {
+                          _controllerNotifier.updateLeftStick(offset.dx, -offset.dy);
+                        }
+                      },
+                    ),
+                  ),
+
+                  // 5. R2 / RT (Right Trigger - Large circle top-right)
+                  CustomizableWrapper(
+                    id: 'rt',
+                    label: triggerRightLabel,
+                    position: layout.rt,
+                    parentConstraints: constraints,
+                    child: QwCircularButton(
+                      label: triggerRightLabel,
+                      size: 78 * s,
+                      fontSize: 18 * s,
+                      baseColor: baseColor,
+                      isPressed: false,
+                      onDown: () => _onButtonDown(triggerRightLabel),
+                      onUp: () => _onButtonUp(triggerRightLabel),
+                    ),
+                  ),
+
+                  // 6. R1 / RB (Right Bumper - Circle slightly inward from trigger)
+                  CustomizableWrapper(
+                    id: 'rb',
+                    label: bumperRightLabel,
+                    position: layout.rb,
+                    parentConstraints: constraints,
+                    child: QwCircularButton(
+                      label: bumperRightLabel,
+                      size: 60 * s,
+                      fontSize: 15 * s,
+                      baseColor: baseColor,
+                      isPressed: false,
+                      onDown: () => _onButtonDown(bumperRightLabel),
+                      onUp: () => _onButtonUp(bumperRightLabel),
+                    ),
+                  ),
+
+                  // 7. RIGHT STICK (Analog thumbstick bottom right-center)
+                  CustomizableWrapper(
+                    id: 'rightStick',
+                    label: 'STICK R',
+                    position: layout.rightStick,
+                    parentConstraints: constraints,
+                    child: VirtualJoystick(
+                      size: 138 * s,
+                      knobSize: 68 * s,
+                      baseColor: baseColor,
+                      knobColor: knobColor,
+                      onChanged: (offset) {
+                        if (!isEditMode) {
+                          _controllerNotifier.updateRightStick(offset.dx, -offset.dy);
+                        }
+                      },
+                    ),
+                  ),
+
+                  // 8. ACTION BUTTONS (PlayStation △○✕□ or Xbox ABXY Diamond)
+                  CustomizableWrapper(
+                    id: 'abxy',
+                    label: isPS ? '△○✕□' : 'ABXY',
+                    position: layout.abxy,
+                    parentConstraints: constraints,
+                    child: ActionButtonsCluster(
+                      size: 182 * s,
+                      baseColor: baseColor,
+                      isPlayStation: isPS,
+                      onButtonDown: _onButtonDown,
+                      onButtonUp: _onButtonUp,
+                    ),
+                  ),
+
+                  // 9. CENTER TOP: Exit Button '✕'
+                  CustomizableWrapper(
+                    id: 'centerTop',
+                    label: 'EXIT',
+                    position: layout.centerTop,
+                    parentConstraints: constraints,
+                    child: QwCircularButton(
+                      icon: const Icon(Icons.close_rounded, color: Colors.white, size: 20),
+                      size: 38 * s,
+                      baseColor: baseColor,
+                      isPressed: false,
+                      onDown: () {},
+                      onUp: () {
+                        if (!isEditMode) Navigator.of(context).pop();
+                      },
+                    ),
+                  ),
+
+                  // 10. CENTER MID ROW: Share/View, PS/Home, Options/Menu
+                  CustomizableWrapper(
+                    id: 'centerMid',
+                    label: 'SYSTEM',
+                    position: layout.centerMid,
+                    parentConstraints: constraints,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // Share (PS) or View (Xbox)
+                        QwCircularButton(
+                          icon: Icon(
+                            isPS ? Icons.share_rounded : Icons.filter_none_rounded,
+                            color: Colors.white,
+                            size: 17,
                           ),
-                          IconButton(
-                            onPressed: () {
-                              ref.read(controllerProvider.notifier).resetAll();
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('Controls reset to neutral'),
-                                  duration: Duration(milliseconds: 600),
-                                ),
-                              );
-                            },
-                            icon: const Icon(
-                              Icons.restart_alt_rounded,
-                              size: 20,
-                              color: Colors.white54,
-                            ),
-                            tooltip: 'Reset Controls',
-                          ),
-                        ],
+                          size: 44 * s,
+                          baseColor: baseColor,
+                          isPressed: false,
+                          onDown: () => _onButtonDown(isPS ? 'SHARE' : 'VIEW'),
+                          onUp: () => _onButtonUp(isPS ? 'SHARE' : 'VIEW'),
+                        ),
+                        SizedBox(width: 14 * s),
+
+                        // PS Button or Guide '2'
+                        QwCircularButton(
+                          label: isPS ? 'PS' : '2',
+                          size: 46 * s,
+                          fontSize: 15 * s,
+                          baseColor: baseColor,
+                          isPressed: false,
+                          onDown: () => _onButtonDown('GUIDE'),
+                          onUp: () => _onButtonUp('GUIDE'),
+                        ),
+                        SizedBox(width: 14 * s),
+
+                        // Options (PS) or Menu (Xbox)
+                        QwCircularButton(
+                          icon: const Icon(Icons.menu_rounded, color: Colors.white, size: 19),
+                          size: 44 * s,
+                          baseColor: baseColor,
+                          isPressed: false,
+                          onDown: () => _onButtonDown(isPS ? 'OPTIONS' : 'MENU'),
+                          onUp: () => _onButtonUp(isPS ? 'OPTIONS' : 'MENU'),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  // 11. CENTER LOWER ROW: L3 & R3 Thumbstick Buttons
+                  CustomizableWrapper(
+                    id: 'centerLow',
+                    label: 'L3 / R3',
+                    position: layout.centerLow,
+                    parentConstraints: constraints,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        QwCircularButton(
+                          label: isPS ? 'L3' : 'Left\nStick',
+                          size: 50 * s,
+                          fontSize: isPS ? 13 * s : 10 * s,
+                          baseColor: baseColor,
+                          isPressed: false,
+                          onDown: () => _onButtonDown('L3'),
+                          onUp: () => _onButtonUp('L3'),
+                        ),
+                        SizedBox(width: 16 * s),
+                        QwCircularButton(
+                          label: isPS ? 'R3' : 'Right\nStick',
+                          size: 50 * s,
+                          fontSize: isPS ? 13 * s : 10 * s,
+                          baseColor: baseColor,
+                          isPressed: false,
+                          onDown: () => _onButtonDown('R3'),
+                          onUp: () => _onButtonUp('R3'),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  // Live Connection Status HUD Pill
+                  if (!isEditMode)
+                    Positioned(
+                      top: 10,
+                      left: 14,
+                      child: Consumer(
+                        builder: (context, ref, _) {
+                          final conn = ref.watch(connectionProvider);
+                          return ConnectionIndicator(connection: conn, compact: true);
+                        },
                       ),
-                    ],
-                  ),
-                ),
+                    ),
 
-                // Shoulder Bumpers (L1 and R1)
-                Positioned(
-                  top: 56,
-                  left: 28,
-                  child: ShoulderBumper(
-                    label: 'L1',
-                    isPressed: controller.isPressed('L1'),
-                    onDown: () => _onButtonDown('L1'),
-                    onUp: () => _onButtonUp('L1'),
-                  ),
-                ),
-                Positioned(
-                  top: 56,
-                  right: 28,
-                  child: ShoulderBumper(
-                    label: 'R1',
-                    isPressed: controller.isPressed('R1'),
-                    onDown: () => _onButtonDown('R1'),
-                    onUp: () => _onButtonUp('R1'),
-                  ),
-                ),
-
-                // Main Controls Area: Left Stick, Center Hub, Right Buttons
-                Positioned(
-                  bottom: 16,
-                  left: 20,
-                  right: 20,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      // Left: Analog Joystick
-                      Padding(
-                        padding: const EdgeInsets.only(left: 12),
-                        child: VirtualJoystick(
-                          size: joystickSize,
-                          knobSize: joystickSize * 0.38,
-                          onChanged: _onJoystickChanged,
+                  // Edit Mode Floating Button (when not in edit mode)
+                  if (!isEditMode)
+                    Positioned(
+                      top: 10,
+                      right: 14,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: Colors.black.withValues(alpha: 0.6),
+                          border: Border.all(color: Colors.white24),
+                        ),
+                        child: IconButton(
+                          icon: const Icon(Icons.tune_rounded, color: Colors.white70, size: 20),
+                          tooltip: 'Customize Layout',
+                          onPressed: () {
+                            _editModeNotifier.setEditMode(true);
+                          },
                         ),
                       ),
+                    ),
 
-                      // Center: Telemetry HUD + Select/Start Buttons
-                      Expanded(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (_showDebugHud) ...[
-                              _TelemetryHud(controller: controller),
-                              const SizedBox(height: 14),
-                            ],
-                            SystemCenterButtons(
-                              onButtonDown: _onButtonDown,
-                              onButtonUp: _onButtonUp,
-                              activeButtons: controller.pressedButtons,
-                            ),
-                            const SizedBox(height: 12),
-                          ],
-                        ),
-                      ),
-
-                      // Right: A/B/X/Y Action Diamond
-                      Padding(
-                        padding: const EdgeInsets.only(right: 12),
-                        child: ActionButtonsCluster(
-                          size: clusterSize,
-                          activeButtons: controller.pressedButtons,
-                          onButtonDown: _onButtonDown,
-                          onButtonUp: _onButtonUp,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
+                  // Edit Mode Top Toolbar Banner
+                  if (isEditMode)
+                    Positioned(
+                      top: 10,
+                      left: 20,
+                      right: 20,
+                      child: _EditModeToolbar(),
+                    ),
+                ],
+              ),
             );
           },
         ),
@@ -237,57 +379,259 @@ class _ControllerScreenState extends ConsumerState<ControllerScreen> {
   }
 }
 
-class _TelemetryHud extends StatelessWidget {
-  final dynamic controller;
-
-  const _TelemetryHud({required this.controller});
+class _EditModeToolbar extends ConsumerWidget {
+  void _showCreateProfileDialog(BuildContext context, WidgetRef ref) {
+    final controller = TextEditingController(text: 'My Custom Controller');
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        title: const Text('Create New Controller'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Enter a name for your new controller layout:',
+              style: TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              decoration: const InputDecoration(
+                hintText: 'e.g. Racing Pro / FPS Setup',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.cyanAccent),
+            onPressed: () {
+              final name = controller.text.trim();
+              Navigator.pop(ctx);
+              ref.read(profileProvider.notifier).createProfile(name);
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Created and switched to "$name"'),
+                  backgroundColor: Colors.teal,
+                ),
+              );
+            },
+            child: const Text('Create', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
-  Widget build(BuildContext context) {
-    final stickX = controller.leftStickX.toStringAsFixed(2);
-    final stickY = controller.leftStickY.toStringAsFixed(2);
-    final buttons = controller.pressedButtons.isEmpty
-        ? 'None'
-        : controller.pressedButtons.join(', ');
+  Widget build(BuildContext context, WidgetRef ref) {
+    final profileState = ref.watch(profileProvider);
+    final layout = profileState.activeConfig;
+    final activeProfile = profileState.activeProfile;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
       decoration: BoxDecoration(
-        color: const Color(0xFF0F172A).withValues(alpha: 0.8),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Colors.white12),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.gamepad, size: 14, color: Colors.cyanAccent),
-              const SizedBox(width: 6),
-              Text(
-                'X: $stickX   Y: $stickY',
-                style: const TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.cyanAccent,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 3),
-          Text(
-            'Active: $buttons',
-            style: const TextStyle(
-              fontFamily: 'monospace',
-              fontSize: 11,
-              color: Colors.white70,
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
+        color: const Color(0xFF1E293B).withValues(alpha: 0.95),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.8), width: 1.5),
+        boxShadow: const [
+          BoxShadow(color: Colors.black54, blurRadius: 12),
         ],
+      ),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        physics: const BouncingScrollPhysics(),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Active Profile Selector Dropdown
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0F172A),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.4)),
+              ),
+              child: DropdownButton<String>(
+                value: activeProfile.id,
+                dropdownColor: const Color(0xFF1E293B),
+                underline: const SizedBox(),
+                icon: const Icon(Icons.arrow_drop_down, color: Colors.cyanAccent),
+                items: profileState.profiles.map((p) {
+                  return DropdownMenuItem<String>(
+                    value: p.id,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          p.isDefault ? Icons.lock_outline_rounded : Icons.sports_esports_rounded,
+                          size: 14,
+                          color: Colors.cyanAccent,
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          p.name,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: p.id == activeProfile.id ? FontWeight.bold : FontWeight.normal,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }).toList(),
+                onChanged: (id) {
+                  if (id != null) {
+                    ref.read(profileProvider.notifier).selectProfile(id);
+                  }
+                },
+              ),
+            ),
+            const SizedBox(width: 8),
+
+            // + New Controller Button
+            IconButton.filledTonal(
+              tooltip: 'Create New Controller',
+              style: IconButton.styleFrom(
+                backgroundColor: Colors.cyanAccent.withValues(alpha: 0.18),
+                foregroundColor: Colors.cyanAccent,
+              ),
+              icon: const Icon(Icons.add_rounded, size: 18),
+              onPressed: () => _showCreateProfileDialog(context, ref),
+            ),
+
+            const SizedBox(width: 12),
+
+            // PlayStation vs Xbox Style Toggle
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(10),
+                color: const Color(0xFF0F172A),
+                border: Border.all(color: Colors.white24),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  InkWell(
+                    onTap: () => ref.read(profileProvider.notifier).setControllerStyle('playstation'),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                      child: Text(
+                        'PS (△○✕□)',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: layout.isPlayStation ? Colors.cyanAccent : Colors.white54,
+                        ),
+                      ),
+                    ),
+                  ),
+                  Container(width: 1, height: 14, color: Colors.white24),
+                  InkWell(
+                    onTap: () => ref.read(profileProvider.notifier).setControllerStyle('xbox'),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                      child: Text(
+                        'Xbox (ABXY)',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: !layout.isPlayStation ? Colors.cyanAccent : Colors.white54,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(width: 14),
+
+            // Theme Selector
+            DropdownButton<String>(
+              value: layout.theme,
+              dropdownColor: const Color(0xFF1E293B),
+              underline: const SizedBox(),
+              items: const [
+                DropdownMenuItem(value: 'playstation_midnight', child: Text('PS Midnight')),
+                DropdownMenuItem(value: 'crimson', child: Text('Crimson (qw12)')),
+                DropdownMenuItem(value: 'classic_gray', child: Text('Retro PS Gray')),
+                DropdownMenuItem(value: 'cyan', child: Text('Cyber Cyan')),
+              ],
+              onChanged: (val) {
+                if (val != null) ref.read(profileProvider.notifier).setTheme(val);
+              },
+            ),
+            const SizedBox(width: 8),
+
+            // Scale -
+            IconButton(
+              icon: const Icon(Icons.remove_circle_outline, color: Colors.white70, size: 20),
+              tooltip: 'Scale Down',
+              onPressed: () {
+                ref.read(profileProvider.notifier).setScale(layout.scale - 0.08);
+              },
+            ),
+            Text(
+              '${(layout.scale * 100).toInt()}%',
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+            ),
+            // Scale +
+            IconButton(
+              icon: const Icon(Icons.add_circle_outline, color: Colors.white70, size: 20),
+              tooltip: 'Scale Up',
+              onPressed: () {
+                ref.read(profileProvider.notifier).setScale(layout.scale + 0.08);
+              },
+            ),
+
+            const SizedBox(width: 10),
+
+            // Reset Button
+            TextButton.icon(
+              style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+              icon: const Icon(Icons.restart_alt_rounded, size: 16),
+              label: const Text('Reset', style: TextStyle(fontSize: 12)),
+              onPressed: () {
+                ref.read(profileProvider.notifier).resetActiveToDefault();
+              },
+            ),
+
+            const SizedBox(width: 10),
+
+            // Done Button
+            FilledButton.icon(
+              style: FilledButton.styleFrom(
+                backgroundColor: Colors.cyanAccent,
+                foregroundColor: Colors.black,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              ),
+              icon: const Icon(Icons.check_rounded, size: 18),
+              label: const Text('Save & Done', style: TextStyle(fontWeight: FontWeight.bold)),
+              onPressed: () {
+                ref.read(editModeProvider.notifier).setEditMode(false);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('Layout saved to "${activeProfile.name}"!'),
+                    duration: const Duration(milliseconds: 900),
+                    backgroundColor: Colors.teal,
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
       ),
     );
   }

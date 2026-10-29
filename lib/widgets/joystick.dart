@@ -5,13 +5,17 @@ class VirtualJoystick extends StatefulWidget {
   final double size;
   final double knobSize;
   final double deadzone;
+  final Color baseColor;
+  final Color knobColor;
   final ValueChanged<Offset> onChanged;
 
   const VirtualJoystick({
     super.key,
-    this.size = 200,
-    this.knobSize = 80,
+    this.size = 170,
+    this.knobSize = 82,
     this.deadzone = 0.08,
+    this.baseColor = const Color(0xFF990000), // Crimson red from qw12.jpg
+    this.knobColor = const Color(0xFFFDE8E8), // Cream knob from qw12.jpg
     required this.onChanged,
   });
 
@@ -97,8 +101,6 @@ class _VirtualJoystickState extends State<VirtualJoystick>
     if (maxDistance <= 0) return;
 
     double normX = offset.dx / maxDistance;
-    // Gamepad convention: Y is negative when pushed UP, positive when pulled DOWN
-    // (or vice-versa; here standard Cartesian math: dy up is negative in screen coordinates)
     double normY = offset.dy / maxDistance;
 
     final mag = math.sqrt(normX * normX + normY * normY);
@@ -106,7 +108,6 @@ class _VirtualJoystickState extends State<VirtualJoystick>
       normX = 0.0;
       normY = 0.0;
     } else {
-      // Re-scale from deadzone to 1.0 for smooth ramp
       final scaledMag = (mag - widget.deadzone) / (1.0 - widget.deadzone);
       final factor = scaledMag / mag;
       normX = (normX * factor).clamp(-1.0, 1.0);
@@ -118,7 +119,8 @@ class _VirtualJoystickState extends State<VirtualJoystick>
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    return RepaintBoundary(
+      child: GestureDetector(
       behavior: HitTestBehavior.opaque,
       onPanStart: _onPanStart,
       onPanUpdate: _onPanUpdate,
@@ -130,7 +132,7 @@ class _VirtualJoystickState extends State<VirtualJoystick>
         child: Stack(
           alignment: Alignment.center,
           children: [
-            // Outer Ring / Base
+            // Outer Ring / Base (Crimson)
             Container(
               width: widget.size,
               height: widget.size,
@@ -138,19 +140,20 @@ class _VirtualJoystickState extends State<VirtualJoystick>
                 shape: BoxShape.circle,
                 gradient: RadialGradient(
                   colors: [
-                    const Color(0xFF1E2433).withValues(alpha: 0.8),
-                    const Color(0xFF0F131D).withValues(alpha: 0.95),
+                    widget.baseColor,
+                    const Color(0xFF550000),
                   ],
+                  center: const Alignment(-0.25, -0.3),
                 ),
                 border: Border.all(
-                  color: Colors.cyanAccent.withValues(alpha: 0.25),
-                  width: 2,
+                  color: Colors.white.withValues(alpha: 0.25),
+                  width: 2.2,
                 ),
-                boxShadow: [
+                boxShadow: const [
                   BoxShadow(
-                    color: Colors.cyanAccent.withValues(alpha: 0.1),
-                    blurRadius: 16,
-                    spreadRadius: 2,
+                    color: Colors.black87,
+                    offset: Offset(0, 4),
+                    blurRadius: 10,
                   ),
                 ],
               ),
@@ -159,7 +162,7 @@ class _VirtualJoystickState extends State<VirtualJoystick>
               ),
             ),
 
-            // Draggable Knob
+            // Draggable Knob (Soft off-white / cream from qw12.jpg)
             Transform.translate(
               offset: _dragOffset,
               child: Container(
@@ -167,25 +170,20 @@ class _VirtualJoystickState extends State<VirtualJoystick>
                 height: widget.knobSize,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  gradient: const RadialGradient(
+                  gradient: RadialGradient(
                     colors: [
-                      Color(0xFF3B4863),
-                      Color(0xFF181F2F),
+                      widget.knobColor,
+                      const Color(0xFFE2C8C8),
                     ],
-                    center: Alignment(-0.2, -0.2),
+                    center: const Alignment(-0.2, -0.2),
                   ),
                   border: Border.all(
-                    color: Colors.cyanAccent.withValues(alpha: 0.8),
-                    width: 2.5,
+                    color: Colors.white,
+                    width: 2.0,
                   ),
-                  boxShadow: [
+                  boxShadow: const [
                     BoxShadow(
-                      color: Colors.cyanAccent.withValues(alpha: 0.35),
-                      blurRadius: 10,
-                      spreadRadius: 1,
-                    ),
-                    const BoxShadow(
-                      color: Colors.black54,
+                      color: Colors.black45,
                       offset: Offset(2, 4),
                       blurRadius: 8,
                     ),
@@ -193,11 +191,11 @@ class _VirtualJoystickState extends State<VirtualJoystick>
                 ),
                 child: Center(
                   child: Container(
-                    width: 14,
-                    height: 14,
+                    width: 22,
+                    height: 22,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: Colors.cyanAccent.withValues(alpha: 0.6),
+                      color: widget.baseColor.withValues(alpha: 0.2),
                     ),
                   ),
                 ),
@@ -206,7 +204,7 @@ class _VirtualJoystickState extends State<VirtualJoystick>
           ],
         ),
       ),
-    );
+    ));
   }
 }
 
@@ -214,36 +212,31 @@ class _CrosshairPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
-      ..color = Colors.white12
+      ..color = Colors.white24
       ..strokeWidth = 1.2
       ..style = PaintingStyle.stroke;
 
     final center = Offset(size.width / 2, size.height / 2);
-    const tickLen = 14.0;
-    const ringRadius = 40.0;
+    const tickLen = 10.0;
 
-    // Subtle inner reference circle
-    canvas.drawCircle(center, ringRadius, paint);
-
-    // Cardinal tick lines
     canvas.drawLine(
-      Offset(center.dx, 12),
-      Offset(center.dx, 12 + tickLen),
+      Offset(center.dx, 8),
+      Offset(center.dx, 8 + tickLen),
       paint,
     );
     canvas.drawLine(
-      Offset(center.dx, size.height - 12 - tickLen),
-      Offset(center.dx, size.height - 12),
+      Offset(center.dx, size.height - 8 - tickLen),
+      Offset(center.dx, size.height - 8),
       paint,
     );
     canvas.drawLine(
-      Offset(12, center.dy),
-      Offset(12 + tickLen, center.dy),
+      Offset(8, center.dy),
+      Offset(8 + tickLen, center.dy),
       paint,
     );
     canvas.drawLine(
-      Offset(size.width - 12 - tickLen, center.dy),
-      Offset(size.width - 12, center.dy),
+      Offset(size.width - 8 - tickLen, center.dy),
+      Offset(size.width - 8, center.dy),
       paint,
     );
   }

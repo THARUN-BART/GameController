@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../models/connection_info.dart';
 import '../models/qr_payload.dart';
 import '../providers/connection_provider.dart';
+import '../providers/layout_provider.dart';
+import '../services/websocket_service.dart';
 import '../widgets/connection_indicator.dart';
 import 'controller_screen.dart';
 import 'qr_scanner_screen.dart';
@@ -16,22 +19,21 @@ class HomeScreen extends ConsumerStatefulWidget {
 }
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
-  final List<Map<String, dynamic>> _recentDevices = [
-    {
-      'name': 'Desktop-Rig (Primary)',
-      'ip': '192.168.1.105',
-      'port': 8080,
-      'token': 'mock_token_abc123',
-      'lastConnected': 'Yesterday',
-    },
-    {
-      'name': 'Gaming-Laptop',
-      'ip': '192.168.1.120',
-      'port': 8080,
-      'token': 'mock_token_xyz789',
-      'lastConnected': '3 days ago',
-    },
-  ];
+  @override
+  void initState() {
+    super.initState();
+    _lockPortrait();
+  }
+
+  void _lockPortrait() {
+    // Mandate strictly portrait orientation for the Home Screen
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+    ]);
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+  }
+
+  final List<Map<String, dynamic>> _recentDevices = [];
 
   Future<void> _handleScanQr() async {
     final status = await Permission.camera.request();
@@ -164,15 +166,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 ),
                 onPressed: () {
                   Navigator.pop(ctx);
-                  // Apply QR payload to provider state
-                  ref.read(connectionProvider.notifier).applyQrPayload(payload);
-                  ref.read(connectionProvider.notifier).setConnected(
-                        host: payload.host,
-                        port: payload.port,
-                        serverName: payload.serverName,
-                        pairingToken: payload.token,
-                      );
-                  _openGamepad();
+                  _connectAndLaunchGamepad(payload);
                 },
                 icon: const Icon(Icons.link_rounded),
                 label: const Text(
@@ -214,8 +208,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   void _showManualConnectDialog() {
-    final ipController = TextEditingController(text: '192.168.1.');
+    final ipController = TextEditingController();
     final portController = TextEditingController(text: '8080');
+    final tokenController = TextEditingController();
     final formKey = GlobalKey<FormState>();
 
     showDialog(
@@ -264,6 +259,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   return null;
                 },
               ),
+              const SizedBox(height: 14),
+              TextFormField(
+                controller: tokenController,
+                decoration: const InputDecoration(
+                  labelText: 'Pairing Token',
+                  hintText: 'UUID token shown on PC receiver',
+                  prefixIcon: Icon(Icons.key_rounded),
+                ),
+                validator: (val) {
+                  if (val == null || val.trim().isEmpty) {
+                    return 'Enter pairing token';
+                  }
+                  return null;
+                },
+              ),
             ],
           ),
         ),
@@ -278,6 +288,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               if (formKey.currentState?.validate() ?? false) {
                 final ip = ipController.text.trim();
                 final port = int.parse(portController.text.trim());
+                final token = tokenController.text.trim();
                 Navigator.pop(context);
 
                 final manualPayload = QrPayload(
@@ -285,25 +296,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   app: QrPayload.appIdentifier,
                   host: ip,
                   port: port,
-                  token: 'manual_token_${DateTime.now().millisecondsSinceEpoch}',
+                  token: token,
                   expiresAt: (DateTime.now().millisecondsSinceEpoch ~/ 1000) + 3600,
                   serverName: 'PC ($ip)',
                 );
 
-                ref.read(connectionProvider.notifier).applyQrPayload(manualPayload);
-                ref.read(connectionProvider.notifier).setConnected(
-                      host: ip,
-                      port: port,
-                      serverName: 'PC ($ip)',
-                      pairingToken: manualPayload.token,
-                    );
-
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text('Target set to $ip:$port'),
-                    backgroundColor: Colors.teal,
-                  ),
-                );
+                _connectAndLaunchGamepad(manualPayload);
               }
             },
             child: const Text(
@@ -316,11 +314,271 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
-  void _openGamepad() {
-    Navigator.of(context).push(
+  Future<void> _connectAndLaunchGamepad(QrPayload payload) async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          backgroundColor: const Color(0xFF1E293B),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          content: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(
+                  width: 44,
+                  height: 44,
+                  child: CircularProgressIndicator(color: Colors.cyanAccent, strokeWidth: 3),
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  'Connecting to ${payload.serverName}...',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'ws://${payload.host}:${payload.port}',
+                  style: const TextStyle(color: Colors.white54, fontSize: 13),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'Authenticating security handshake with PC receiver...',
+                  style: TextStyle(color: Colors.cyanAccent, fontSize: 12),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final wsService = ref.read(webSocketServiceProvider);
+    final success = await wsService.connect(
+      host: payload.host,
+      port: payload.port,
+      token: payload.token,
+    );
+
+    if (!mounted) return;
+    Navigator.of(context, rootNavigator: true).pop(); // Dismiss connecting modal
+
+    if (success) {
+      _updateRecentDevice(payload);
+      _openGamepad();
+    } else {
+      final errorMsg = ref.read(connectionProvider).errorMessage ??
+          'Pairing handshake failed. Ensure PC receiver is running on the same Wi-Fi.';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(errorMsg),
+          backgroundColor: Colors.redAccent,
+          duration: const Duration(seconds: 4),
+          action: SnackBarAction(
+            label: 'Retry',
+            textColor: Colors.white,
+            onPressed: () => _connectAndLaunchGamepad(payload),
+          ),
+        ),
+      );
+    }
+  }
+
+  void _updateRecentDevice(QrPayload payload) {
+    setState(() {
+      _recentDevices.removeWhere(
+        (d) => d['ip'] == payload.host && d['port'] == payload.port,
+      );
+      _recentDevices.insert(0, {
+        'name': payload.serverName,
+        'ip': payload.host,
+        'port': payload.port,
+        'token': payload.token,
+        'lastConnected': 'Just now',
+      });
+      if (_recentDevices.length > 5) {
+        _recentDevices.removeLast();
+      }
+    });
+  }
+
+  Future<void> _openGamepad() async {
+    await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => const ControllerScreen(),
       ),
+    );
+    // When returning from controller screen, strictly re-enforce portrait orientation
+    _lockPortrait();
+  }
+
+  void _showCreateProfileDialog() {
+    final controller = TextEditingController(text: 'My Custom Controller');
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        title: const Text('Create New Controller'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Enter a name for your custom controller layout:',
+              style: TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              decoration: const InputDecoration(
+                hintText: 'e.g. Pro Racing / DualSense Mod',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.cyanAccent),
+            onPressed: () {
+              final name = controller.text.trim();
+              Navigator.pop(ctx);
+              ref.read(profileProvider.notifier).createProfile(name);
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Created and selected "$name"!'),
+                  backgroundColor: Colors.teal,
+                ),
+              );
+            },
+            child: const Text('Create', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showProfileManagerSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF131B2E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) {
+        final profileState = ref.watch(profileProvider);
+
+        return Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Controller Layouts',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+                  FilledButton.icon(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: Colors.cyanAccent,
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    ),
+                    icon: const Icon(Icons.add, size: 16),
+                    label: const Text('New Layout', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      _showCreateProfileDialog();
+                    },
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              ...profileState.profiles.map((p) {
+                final isSelected = p.id == profileState.activeProfileId;
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  decoration: BoxDecoration(
+                    color: isSelected
+                        ? Colors.cyanAccent.withValues(alpha: 0.12)
+                        : const Color(0xFF1E293B),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: isSelected ? Colors.cyanAccent : Colors.white12,
+                      width: isSelected ? 1.5 : 1.0,
+                    ),
+                  ),
+                  child: ListTile(
+                    leading: Icon(
+                      p.isDefault ? Icons.lock_outline_rounded : Icons.sports_esports_rounded,
+                      color: isSelected ? Colors.cyanAccent : Colors.white60,
+                    ),
+                    title: Text(
+                      p.name,
+                      style: TextStyle(
+                        fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                        color: isSelected ? Colors.cyanAccent : Colors.white,
+                      ),
+                    ),
+                    subtitle: Text(
+                      p.isDefault
+                          ? 'Permanent Default • ${p.config.isPlayStation ? "PlayStation (△○✕□)" : "Xbox (ABXY)"}'
+                          : 'Custom Layout • ${p.config.isPlayStation ? "PlayStation" : "Xbox"}',
+                      style: const TextStyle(fontSize: 11, color: Colors.white54),
+                    ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (isSelected)
+                          const Icon(Icons.check_circle_rounded, color: Colors.cyanAccent, size: 20),
+                        if (!p.isDefault)
+                          IconButton(
+                            icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 20),
+                            tooltip: 'Delete Layout',
+                            onPressed: () {
+                              ref.read(profileProvider.notifier).deleteProfile(p.id);
+                            },
+                          ),
+                      ],
+                    ),
+                    onTap: () {
+                      ref.read(profileProvider.notifier).selectProfile(p.id);
+                      Navigator.pop(ctx);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Switched to "${p.name}"'),
+                          backgroundColor: Colors.teal,
+                          duration: const Duration(milliseconds: 700),
+                        ),
+                      );
+                    },
+                  ),
+                );
+              }),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -359,22 +617,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ],
         ),
         actions: [
-          IconButton(
-            tooltip: 'Simulate Connect/Disconnect',
-            icon: Icon(
-              connection.isConnected
-                  ? Icons.link_off_rounded
-                  : Icons.bolt_rounded,
-              color: connection.isConnected ? Colors.redAccent : Colors.cyanAccent,
+          if (connection.isConnected)
+            IconButton(
+              tooltip: 'Disconnect',
+              icon: const Icon(Icons.link_off_rounded, color: Colors.redAccent),
+              onPressed: () {
+                ref.read(webSocketServiceProvider).disconnect(reason: 'user_action');
+              },
             ),
-            onPressed: () {
-              if (connection.isConnected) {
-                ref.read(connectionProvider.notifier).disconnect();
-              } else {
-                ref.read(connectionProvider.notifier).simulateConnect();
-              }
-            },
-          ),
         ],
       ),
       body: SingleChildScrollView(
@@ -473,6 +723,66 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ),
 
             const SizedBox(height: 16),
+
+            // Active Controller Layout Card with Selector / Create
+            Builder(builder: (context) {
+              final activeProfile = ref.watch(profileProvider.select((s) => s.activeProfile));
+              return Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(16),
+                  color: const Color(0xFF131B2E),
+                  border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.3)),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.cyanAccent.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(Icons.sports_esports_rounded, color: Colors.cyanAccent, size: 22),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            activeProfile.name,
+                            style: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            activeProfile.isDefault
+                                ? 'Permanent Default • ${activeProfile.config.isPlayStation ? "PlayStation (△○✕□)" : "Xbox (ABXY)"}'
+                                : 'Custom • ${activeProfile.config.isPlayStation ? "PlayStation" : "Xbox"}',
+                            style: const TextStyle(fontSize: 11, color: Colors.white54),
+                          ),
+                        ],
+                      ),
+                    ),
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        side: const BorderSide(color: Colors.cyanAccent, width: 1),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                      icon: const Icon(Icons.tune_rounded, size: 14, color: Colors.cyanAccent),
+                      label: const Text('Layouts', style: TextStyle(color: Colors.cyanAccent, fontSize: 12)),
+                      onPressed: _showProfileManagerSheet,
+                    ),
+                  ],
+                ),
+              );
+            }),
+
+            const SizedBox(height: 14),
 
             // Open Controller Button
             SizedBox(
@@ -616,13 +926,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                           color: Colors.cyanAccent,
                         ),
                         onPressed: () {
-                          ref.read(connectionProvider.notifier).setConnected(
-                                host: dev['ip'],
-                                port: dev['port'],
-                                serverName: dev['name'],
-                                pairingToken: dev['token'],
-                              );
-                          _openGamepad();
+                          final payload = QrPayload(
+                            version: QrPayload.currentVersion,
+                            app: QrPayload.appIdentifier,
+                            host: dev['ip'] as String,
+                            port: dev['port'] as int,
+                            token: (dev['token'] as String?) ?? '',
+                            expiresAt: (DateTime.now().millisecondsSinceEpoch ~/ 1000) + 3600,
+                            serverName: dev['name'] as String,
+                          );
+                          _connectAndLaunchGamepad(payload);
                         },
                       ),
                     ],

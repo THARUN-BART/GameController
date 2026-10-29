@@ -286,16 +286,34 @@ impl ReceiverServer {
                             right_stick,
                             buttons,
                         }) => {
+                            let left_x = left_stick.as_ref().map(|s| s.x);
+                            let left_y = left_stick.as_ref().map(|s| s.y);
+                            let right_x = right_stick.as_ref().map(|s| s.x);
+                            let right_y = right_stick.as_ref().map(|s| s.y);
+
                             let mut state = controller_st.lock().await;
-                            state.sequence_number = seq;
-                            state.timestamp_ms = ts;
-                            if let Some(ls) = left_stick {
-                                state.set_left_stick(ls.x, ls.y);
+                            let accepted = state.apply_input(
+                                seq,
+                                ts,
+                                left_x,
+                                left_y,
+                                right_x,
+                                right_y,
+                                &buttons,
+                            );
+
+                            if accepted && seq % 240 == 0 && seq > 0 {
+                                println!(
+                                    "[INPUT] Packet #{} from '{}': buttons={:?}, L=({:.2},{:.2}), R=({:.2},{:.2})",
+                                    seq,
+                                    client_name,
+                                    state.pressed_buttons,
+                                    state.left_stick_x,
+                                    state.left_stick_y,
+                                    state.right_stick_x,
+                                    state.right_stick_y
+                                );
                             }
-                            if let Some(rs) = right_stick {
-                                state.set_right_stick(rs.x, rs.y);
-                            }
-                            state.pressed_buttons = buttons.into_iter().collect();
                         }
                         Ok(ClientMessage::Disconnect { reason }) => {
                             println!(

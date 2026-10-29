@@ -1,9 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'pages/home_screen.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Enforce mandatory portrait mode on application start
+  await SystemChrome.setPreferredOrientations([
+    DeviceOrientation.portraitUp,
+  ]);
   runApp(const ProviderScope(child: LANGamepadApp()));
 }
 
@@ -20,12 +25,12 @@ class LANGamepadApp extends StatelessWidget {
         useMaterial3: true,
         brightness: Brightness.dark,
         scaffoldBackgroundColor: const Color(0xFF0B0F19),
-        colorScheme: ColorScheme.dark(
+        colorScheme: const ColorScheme.dark(
           primary: Colors.cyanAccent,
           onPrimary: Colors.black,
-          surface: const Color(0xFF131B2E),
+          surface: Color(0xFF131B2E),
           onSurface: Colors.white,
-          secondary: const Color(0xFF38BDF8),
+          secondary: Color(0xFF38BDF8),
         ),
         appBarTheme: const AppBarTheme(
           backgroundColor: Colors.transparent,

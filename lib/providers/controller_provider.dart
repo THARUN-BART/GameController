@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/controller_state.dart';
+import '../services/websocket_service.dart';
 
 class ControllerNotifier extends Notifier<ControllerState> {
   int _sequenceNumber = 0;
@@ -9,7 +10,13 @@ class ControllerNotifier extends Notifier<ControllerState> {
     return ControllerState.neutral;
   }
 
-  void updateStick(double x, double y) {
+  void _broadcast() {
+    try {
+      ref.read(webSocketServiceProvider).sendInput(state);
+    } catch (_) {}
+  }
+
+  void updateLeftStick(double x, double y) {
     _sequenceNumber++;
     state = state.copyWith(
       leftStickX: x,
@@ -17,6 +24,18 @@ class ControllerNotifier extends Notifier<ControllerState> {
       sequenceNumber: _sequenceNumber,
       timestamp: DateTime.now().millisecondsSinceEpoch,
     );
+    _broadcast();
+  }
+
+  void updateRightStick(double x, double y) {
+    _sequenceNumber++;
+    state = state.copyWith(
+      rightStickX: x,
+      rightStickY: y,
+      sequenceNumber: _sequenceNumber,
+      timestamp: DateTime.now().millisecondsSinceEpoch,
+    );
+    _broadcast();
   }
 
   void pressButton(String button) {
@@ -28,6 +47,7 @@ class ControllerNotifier extends Notifier<ControllerState> {
       sequenceNumber: _sequenceNumber,
       timestamp: DateTime.now().millisecondsSinceEpoch,
     );
+    _broadcast();
   }
 
   void releaseButton(String button) {
@@ -39,6 +59,7 @@ class ControllerNotifier extends Notifier<ControllerState> {
       sequenceNumber: _sequenceNumber,
       timestamp: DateTime.now().millisecondsSinceEpoch,
     );
+    _broadcast();
   }
 
   void resetButton(String button) {
@@ -51,6 +72,7 @@ class ControllerNotifier extends Notifier<ControllerState> {
       sequenceNumber: _sequenceNumber,
       timestamp: DateTime.now().millisecondsSinceEpoch,
     );
+    _broadcast();
   }
 }
 

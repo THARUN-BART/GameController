@@ -50,17 +50,6 @@ class ConnectionNotifier extends Notifier<ConnectionInfo> {
       errorMessage: null,
     );
   }
-
-  void simulateConnect() {
-    state = state.copyWith(
-      status: ConnectionStatus.connected,
-      host: '192.168.1.100',
-      port: 8080,
-      serverName: 'Gaming-PC (Simulated)',
-      pairingToken: 'simulated_sec_token_8899',
-      latencyMs: 12,
-    );
-  }
 }
 
 final connectionProvider =
