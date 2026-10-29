@@ -13,7 +13,11 @@ pub enum ClientMessage {
     Input {
         seq: u64,
         ts: u64,
-        stick: StickPayload,
+        #[serde(default)]
+        left_stick: Option<StickPayload>,
+        #[serde(default)]
+        right_stick: Option<StickPayload>,
+        #[serde(default)]
         buttons: Vec<String>,
     },
     Ping {
@@ -24,7 +28,7 @@ pub enum ClientMessage {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StickPayload {
     pub x: f32,
     pub y: f32,

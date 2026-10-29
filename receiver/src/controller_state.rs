@@ -5,6 +5,8 @@ use std::collections::HashSet;
 pub struct ControllerState {
     pub left_stick_x: f32,
     pub left_stick_y: f32,
+    pub right_stick_x: f32,
+    pub right_stick_y: f32,
     pub pressed_buttons: HashSet<String>,
     pub sequence_number: u64,
     pub timestamp_ms: u64,
@@ -21,6 +23,8 @@ impl ControllerState {
         Self {
             left_stick_x: 0.0,
             left_stick_y: 0.0,
+            right_stick_x: 0.0,
+            right_stick_y: 0.0,
             pressed_buttons: HashSet::new(),
             sequence_number: 0,
             timestamp_ms: 0,
@@ -30,12 +34,19 @@ impl ControllerState {
     pub fn reset(&mut self) {
         self.left_stick_x = 0.0;
         self.left_stick_y = 0.0;
+        self.right_stick_x = 0.0;
+        self.right_stick_y = 0.0;
         self.pressed_buttons.clear();
     }
 
-    pub fn set_stick(&mut self, x: f32, y: f32) {
+    pub fn set_left_stick(&mut self, x: f32, y: f32) {
         self.left_stick_x = x.clamp(-1.0, 1.0);
         self.left_stick_y = y.clamp(-1.0, 1.0);
+    }
+
+    pub fn set_right_stick(&mut self, x: f32, y: f32) {
+        self.right_stick_x = x.clamp(-1.0, 1.0);
+        self.right_stick_y = y.clamp(-1.0, 1.0);
     }
 
     pub fn press_button(&mut self, button: String) {

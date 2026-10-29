@@ -1,12 +1,16 @@
 use crate::controller_state::ControllerState;
 use crate::pairing::PairingManager;
-use futures_util::StreamExt;
+use crate::protocol::{ClientMessage, ServerMessage, PROTOCOL_VERSION};
+use futures_util::{SinkExt, StreamExt};
 use local_ip_address::local_ip;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
+use tokio::time::{timeout, Duration};
 use tokio_tungstenite::accept_async;
+use tokio_tungstenite::tungstenite::Message;
 
 pub struct ReceiverServer {
     pairing_manager: Arc<Mutex<PairingManager>>,
@@ -44,6 +48,14 @@ impl ReceiverServer {
         }
     }
 
+    pub fn pairing_manager(&self) -> Arc<Mutex<PairingManager>> {
+        Arc::clone(&self.pairing_manager)
+    }
+
+    pub fn controller_state(&self) -> Arc<Mutex<ControllerState>> {
+        Arc::clone(&self.controller_state)
+    }
+
     /// Starts the WebSocket TCP server and displays the QR pairing display in the terminal
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
         let bind_addr: SocketAddr = format!("0.0.0.0:{}", self.port).parse()?;
@@ -55,6 +67,11 @@ impl ReceiverServer {
         println!("[SERVER] WebSocket server listening on {}", bind_addr);
         println!("[SERVER] Waiting for mobile gamepad to scan and connect...\n");
 
+        self.run_on_listener(listener).await
+    }
+
+    /// Runs the accept loop on an already bound TcpListener (useful for testing and custom bindings)
+    pub async fn run_on_listener(&self, listener: TcpListener) -> Result<(), Box<dyn std::error::Error>> {
         loop {
             match listener.accept().await {
                 Ok((stream, peer_addr)) => {
@@ -68,9 +85,11 @@ impl ReceiverServer {
                 }
                 Err(e) => {
                     eprintln!("[ERROR] Error accepting connection: {}", e);
+                    break;
                 }
             }
         }
+        Ok(())
     }
 
     /// Prints a sleek ASCII terminal display with the rendered QR code and connection instructions
@@ -108,12 +127,12 @@ impl ReceiverServer {
     async fn handle_connection(
         stream: TcpStream,
         peer_addr: SocketAddr,
-        _pairing_mgr: Arc<Mutex<PairingManager>>,
+        pairing_mgr: Arc<Mutex<PairingManager>>,
         controller_st: Arc<Mutex<ControllerState>>,
     ) {
         let ws_stream = match accept_async(stream).await {
             Ok(ws) => {
-                println!("[WEBSOCKET] Handshake established with {}", peer_addr);
+                println!("[WEBSOCKET] TCP handshake established with {}", peer_addr);
                 ws
             }
             Err(e) => {
@@ -122,28 +141,203 @@ impl ReceiverServer {
             }
         };
 
-        let (_write, mut read) = ws_stream.split();
+        let (mut write, mut read) = ws_stream.split();
+
+        // 1. Enforce Authenticated Pairing Handshake with a 10s timeout
+        println!("[AUTH] Awaiting pairing credentials from {}...", peer_addr);
+        let first_msg_res = timeout(Duration::from_secs(10), read.next()).await;
+
+        let client_msg = match first_msg_res {
+            Ok(Some(Ok(Message::Text(text)))) => {
+                match serde_json::from_str::<ClientMessage>(&text) {
+                    Ok(msg) => msg,
+                    Err(e) => {
+                        eprintln!("[AUTH] Invalid JSON from {}: {}", peer_addr, e);
+                        let err_resp = ServerMessage::Error {
+                            code: 400,
+                            message: format!("Malformed request JSON: {}", e),
+                        };
+                        let _ = write.send(Message::Text(serde_json::to_string(&err_resp).unwrap().into())).await;
+                        let _ = write.close().await;
+                        return;
+                    }
+                }
+            }
+            Ok(Some(Ok(Message::Close(_)))) => {
+                println!("[AUTH] Client {} closed connection before pairing.", peer_addr);
+                return;
+            }
+            Ok(Some(Err(e))) => {
+                eprintln!("[AUTH] WebSocket receive error from {}: {}", peer_addr, e);
+                return;
+            }
+            Ok(None) => {
+                println!("[AUTH] Stream ended before pairing from {}", peer_addr);
+                return;
+            }
+            Err(_) => {
+                eprintln!("[AUTH] Pairing handshake timed out (10s) for {}", peer_addr);
+                let err_resp = ServerMessage::Error {
+                    code: 408,
+                    message: "Pairing handshake timed out".to_string(),
+                };
+                let _ = write.send(Message::Text(serde_json::to_string(&err_resp).unwrap().into())).await;
+                let _ = write.close().await;
+                return;
+            }
+            _ => {
+                eprintln!("[AUTH] Non-text handshake message from {}", peer_addr);
+                let _ = write.close().await;
+                return;
+            }
+        };
+
+        // 2. Validate Pairing Credentials
+        let client_name = match client_msg {
+            ClientMessage::Pair { token, client_name, client_version } => {
+                let mgr = pairing_mgr.lock().await;
+                let server_name = mgr.server_name().to_string();
+
+                if client_version != PROTOCOL_VERSION {
+                    eprintln!(
+                        "[AUTH] Protocol version mismatch from {}: got {}, expected {}",
+                        peer_addr, client_version, PROTOCOL_VERSION
+                    );
+                    let rej = ServerMessage::PairAck {
+                        success: false,
+                        message: format!("Protocol version mismatch. Server requires v{}", PROTOCOL_VERSION),
+                        server_name,
+                        version: PROTOCOL_VERSION,
+                    };
+                    let _ = write.send(Message::Text(serde_json::to_string(&rej).unwrap().into())).await;
+                    let _ = write.close().await;
+                    return;
+                }
+
+                if let Err(err_reason) = mgr.validate_token(&token) {
+                    eprintln!("[AUTH] Pairing rejected for {}: {}", peer_addr, err_reason);
+                    let rej = ServerMessage::PairAck {
+                        success: false,
+                        message: err_reason.to_string(),
+                        server_name,
+                        version: PROTOCOL_VERSION,
+                    };
+                    let _ = write.send(Message::Text(serde_json::to_string(&rej).unwrap().into())).await;
+                    let _ = write.close().await;
+                    return;
+                }
+
+                // Authentication Successful!
+                println!(
+                    "[AUTH] Client '{}' ({}) authenticated successfully!",
+                    client_name, peer_addr
+                );
+                let ack = ServerMessage::PairAck {
+                    success: true,
+                    message: "Pairing authenticated successfully".to_string(),
+                    server_name,
+                    version: PROTOCOL_VERSION,
+                };
+                if let Err(e) = write.send(Message::Text(serde_json::to_string(&ack).unwrap().into())).await {
+                    eprintln!("[AUTH] Failed to send PairAck to {}: {}", peer_addr, e);
+                    return;
+                }
+                client_name
+            }
+            _ => {
+                eprintln!("[AUTH] First message was not 'pair' from {}", peer_addr);
+                let err_resp = ServerMessage::Error {
+                    code: 401,
+                    message: "First message must be pairing handshake ('pair')".to_string(),
+                };
+                let _ = write.send(Message::Text(serde_json::to_string(&err_resp).unwrap().into())).await;
+                let _ = write.close().await;
+                return;
+            }
+        };
+
+        // 3. Authenticated Session Loop
+        println!("[SESSION] Session active for '{}' ({})", client_name, peer_addr);
 
         while let Some(msg) = read.next().await {
             match msg {
-                Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
-                    println!("[MSG] Received from {}: {}", peer_addr, text);
+                Ok(Message::Text(text)) => {
+                    match serde_json::from_str::<ClientMessage>(&text) {
+                        Ok(ClientMessage::Ping { ts }) => {
+                            let now_ms = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64;
+                            let pong = ServerMessage::Pong {
+                                client_ts: ts,
+                                server_ts: now_ms,
+                            };
+                            if let Ok(json) = serde_json::to_string(&pong) {
+                                if let Err(e) = write.send(Message::Text(json.into())).await {
+                                    eprintln!("[WEBSOCKET] Failed to send Pong to {}: {}", peer_addr, e);
+                                    break;
+                                }
+                            }
+                        }
+                        Ok(ClientMessage::Input {
+                            seq,
+                            ts,
+                            left_stick,
+                            right_stick,
+                            buttons,
+                        }) => {
+                            let mut state = controller_st.lock().await;
+                            state.sequence_number = seq;
+                            state.timestamp_ms = ts;
+                            if let Some(ls) = left_stick {
+                                state.set_left_stick(ls.x, ls.y);
+                            }
+                            if let Some(rs) = right_stick {
+                                state.set_right_stick(rs.x, rs.y);
+                            }
+                            state.pressed_buttons = buttons.into_iter().collect();
+                        }
+                        Ok(ClientMessage::Disconnect { reason }) => {
+                            println!(
+                                "[SESSION] Client '{}' ({}) disconnected intentionally: {:?}",
+                                client_name, peer_addr, reason
+                            );
+                            break;
+                        }
+                        Ok(ClientMessage::Pair { .. }) => {
+                            // Already paired; respond with ack
+                            let mgr = pairing_mgr.lock().await;
+                            let ack = ServerMessage::PairAck {
+                                success: true,
+                                message: "Already authenticated".to_string(),
+                                server_name: mgr.server_name().to_string(),
+                                version: PROTOCOL_VERSION,
+                            };
+                            let _ = write.send(Message::Text(serde_json::to_string(&ack).unwrap().into())).await;
+                        }
+                        Err(e) => {
+                            eprintln!("[SESSION] Invalid message format from {}: {}", peer_addr, e);
+                        }
+                    }
                 }
-                Ok(tokio_tungstenite::tungstenite::Message::Close(_)) => {
-                    println!("[WEBSOCKET] Client {} disconnected cleanly.", peer_addr);
+                Ok(Message::Close(_)) => {
+                    println!("[SESSION] Client '{}' ({}) disconnected cleanly.", client_name, peer_addr);
                     break;
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    eprintln!("[ERROR] WebSocket connection error with {}: {}", peer_addr, e);
+                    eprintln!("[SESSION] Connection error with '{}' ({}): {}", client_name, peer_addr, e);
                     break;
                 }
             }
         }
 
-        // Safety guarantee: reset all inputs upon client disconnect
+        // 4. Safety Guarantee: reset all inputs upon client disconnect
         let mut state = controller_st.lock().await;
         state.reset();
-        println!("[CONTROLLER] Controller state reset to neutral for {}", peer_addr);
+        println!(
+            "[CONTROLLER] Controller state reset to neutral after '{}' ({}) disconnected.",
+            client_name, peer_addr
+        );
     }
 }
