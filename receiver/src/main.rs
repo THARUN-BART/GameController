@@ -10,7 +10,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         8080
     };
 
-    let (server, _pairing_mgr, _controller_st) = ReceiverServer::new(port);
+    let (server, _pairing_mgr, _controller_st, _virtual_pad) = ReceiverServer::new(port);
 
     if let Err(e) = server.run().await {
         eprintln!("[FATAL] Server terminated with error: {}", e);

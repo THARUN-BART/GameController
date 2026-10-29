@@ -10,7 +10,7 @@ use tokio_tungstenite::tungstenite::Message;
 async fn test_successful_pairing_and_ping_pong() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let (server, pairing_mgr, controller_st) = ReceiverServer::new(addr.port());
+    let (server, pairing_mgr, controller_st, _) = ReceiverServer::new(addr.port());
 
     let token = {
         let mgr = pairing_mgr.lock().await;
@@ -122,7 +122,7 @@ async fn test_successful_pairing_and_ping_pong() {
 async fn test_pairing_rejected_with_invalid_token() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let (server, _, _) = ReceiverServer::new(addr.port());
+    let (server, _, _, _) = ReceiverServer::new(addr.port());
 
     tokio::spawn(async move {
         let _ = server.run_on_listener(listener).await;
@@ -164,7 +164,7 @@ async fn test_pairing_rejected_with_invalid_token() {
 async fn test_unauthenticated_first_message_rejected() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let (server, _, _) = ReceiverServer::new(addr.port());
+    let (server, _, _, _) = ReceiverServer::new(addr.port());
 
     tokio::spawn(async move {
         let _ = server.run_on_listener(listener).await;

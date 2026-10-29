@@ -1,6 +1,7 @@
 use crate::controller_state::ControllerState;
 use crate::pairing::PairingManager;
 use crate::protocol::{ClientMessage, ServerMessage, PROTOCOL_VERSION};
+use crate::virtual_gamepad::VirtualGamepadManager;
 use futures_util::{SinkExt, StreamExt};
 use local_ip_address::local_ip;
 use std::net::SocketAddr;
@@ -15,11 +16,12 @@ use tokio_tungstenite::tungstenite::Message;
 pub struct ReceiverServer {
     pairing_manager: Arc<Mutex<PairingManager>>,
     controller_state: Arc<Mutex<ControllerState>>,
+    virtual_gamepad: Arc<Mutex<VirtualGamepadManager>>,
     port: u16,
 }
 
 impl ReceiverServer {
-    pub fn new(port: u16) -> (Self, Arc<Mutex<PairingManager>>, Arc<Mutex<ControllerState>>) {
+    pub fn new(port: u16) -> (Self, Arc<Mutex<PairingManager>>, Arc<Mutex<ControllerState>>, Arc<Mutex<VirtualGamepadManager>>) {
         let host_ip = Self::discover_lan_ip();
         let pc_name = hostname::get()
             .map(|s| s.to_string_lossy().to_string())
@@ -27,14 +29,20 @@ impl ReceiverServer {
 
         let pairing_mgr = Arc::new(Mutex::new(PairingManager::new(host_ip, port, pc_name)));
         let controller_st = Arc::new(Mutex::new(ControllerState::neutral()));
+        let virtual_pad = Arc::new(Mutex::new(VirtualGamepadManager::new()));
 
         let server = Self {
             pairing_manager: Arc::clone(&pairing_mgr),
             controller_state: Arc::clone(&controller_st),
+            virtual_gamepad: Arc::clone(&virtual_pad),
             port,
         };
 
-        (server, pairing_mgr, controller_st)
+        (server, pairing_mgr, controller_st, virtual_pad)
+    }
+
+    pub fn virtual_gamepad(&self) -> Arc<Mutex<VirtualGamepadManager>> {
+        Arc::clone(&self.virtual_gamepad)
     }
 
     /// Discovers active local Wi-Fi / Ethernet LAN IPv4 address
@@ -78,9 +86,10 @@ impl ReceiverServer {
                     println!("[NETWORK] Incoming connection from: {}", peer_addr);
                     let pairing_mgr = Arc::clone(&self.pairing_manager);
                     let controller_st = Arc::clone(&self.controller_state);
+                    let virtual_pad = Arc::clone(&self.virtual_gamepad);
 
                     tokio::spawn(async move {
-                        Self::handle_connection(stream, peer_addr, pairing_mgr, controller_st).await;
+                        Self::handle_connection(stream, peer_addr, pairing_mgr, controller_st, virtual_pad).await;
                     });
                 }
                 Err(e) => {
@@ -95,6 +104,7 @@ impl ReceiverServer {
     /// Prints a sleek ASCII terminal display with the rendered QR code and connection instructions
     pub async fn display_pairing_screen(&self) -> Result<(), Box<dyn std::error::Error>> {
         let mgr = self.pairing_manager.lock().await;
+        let vpad = self.virtual_gamepad.lock().await;
         let qr_art = mgr.render_qr_terminal().map_err(|e| e)?;
         let host = mgr.host();
         let port = mgr.port();
@@ -109,12 +119,13 @@ impl ReceiverServer {
         println!(" LAN Address  : {}:{}", host, port);
         println!(" WebSocket URL: ws://{}:{}", host, port);
         println!(" Pairing Token: {} (Expires in {}s)", token, remaining);
+        println!(" Game Backend : {}", if vpad.is_active() { "Virtual Xbox 360 Controller (Ready for Games)" } else { "Standalone Network Feed (ViGEmBus not active)" });
         println!("------------------------------------------------------------------");
         println!(" Scan the QR code below using the LAN Gamepad Android app:\n");
 
         // Print the high-contrast dense Unicode QR code directly into stdout
         for line in qr_art.lines() {
-            println!("    {}", line);
+            println!("  {}", line);
         }
 
         println!("\n------------------------------------------------------------------");
@@ -129,6 +140,7 @@ impl ReceiverServer {
         peer_addr: SocketAddr,
         pairing_mgr: Arc<Mutex<PairingManager>>,
         controller_st: Arc<Mutex<ControllerState>>,
+        virtual_pad: Arc<Mutex<VirtualGamepadManager>>,
     ) {
         let ws_stream = match accept_async(stream).await {
             Ok(ws) => {
@@ -302,17 +314,22 @@ impl ReceiverServer {
                                 &buttons,
                             );
 
-                            if accepted && seq % 240 == 0 && seq > 0 {
-                                println!(
-                                    "[INPUT] Packet #{} from '{}': buttons={:?}, L=({:.2},{:.2}), R=({:.2},{:.2})",
-                                    seq,
-                                    client_name,
-                                    state.pressed_buttons,
-                                    state.left_stick_x,
-                                    state.left_stick_y,
-                                    state.right_stick_x,
-                                    state.right_stick_y
-                                );
+                            if accepted {
+                                let mut vpad = virtual_pad.lock().await;
+                                vpad.update(&state);
+
+                                if seq % 240 == 0 && seq > 0 {
+                                    println!(
+                                        "[INPUT] Packet #{} from '{}': buttons={:?}, L=({:.2},{:.2}), R=({:.2},{:.2})",
+                                        seq,
+                                        client_name,
+                                        state.pressed_buttons,
+                                        state.left_stick_x,
+                                        state.left_stick_y,
+                                        state.right_stick_x,
+                                        state.right_stick_y
+                                    );
+                                }
                             }
                         }
                         Ok(ClientMessage::Disconnect { reason }) => {
@@ -353,6 +370,8 @@ impl ReceiverServer {
         // 4. Safety Guarantee: reset all inputs upon client disconnect
         let mut state = controller_st.lock().await;
         state.reset();
+        let mut vpad = virtual_pad.lock().await;
+        vpad.reset();
         println!(
             "[CONTROLLER] Controller state reset to neutral after '{}' ({}) disconnected.",
             client_name, peer_addr

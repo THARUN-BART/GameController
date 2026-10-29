@@ -57,7 +57,7 @@ impl PairingManager {
             .unwrap_or_default()
             .as_secs();
 
-        self.current_token = Uuid::new_v4().to_string();
+        self.current_token = Uuid::new_v4().to_string()[..8].to_string();
         self.token_expires_at = now + self.ttl_seconds;
     }
 
@@ -123,7 +123,7 @@ impl PairingManager {
             .render::<Dense1x2>()
             .dark_color(Dense1x2::Dark)
             .light_color(Dense1x2::Light)
-            .quiet_zone(true)
+            .quiet_zone(false)
             .build();
 
         Ok(qr_string)
