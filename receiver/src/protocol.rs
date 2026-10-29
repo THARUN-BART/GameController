@@ -47,6 +47,10 @@ pub enum ServerMessage {
         client_ts: u64,
         server_ts: u64,
     },
+    Rumble {
+        large: u8,
+        small: u8,
+    },
     StateAck {
         seq: u64,
     },

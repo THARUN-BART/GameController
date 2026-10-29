@@ -125,6 +125,7 @@ class _ControllerScreenState extends ConsumerState<ControllerScreen> {
     // Watching controllerProvider at root caused 120 FPS rebuilds on every thumb move.
     final layout = ref.watch(layoutProvider);
     final isEditMode = ref.watch(editModeProvider);
+    final isConnected = ref.watch(connectionProvider.select((c)=> c.isConnected));
 
     final baseColor = layout.primaryColor;
     final knobColor = layout.knobColor;
@@ -449,7 +450,7 @@ class _ControllerScreenState extends ConsumerState<ControllerScreen> {
                   ),
 
                   // Edit Mode Floating Button (when not in edit mode)
-                  if (!isEditMode)
+                  if (!isEditMode && !isConnected)
                     Positioned(
                       top: 10,
                       right: 14,

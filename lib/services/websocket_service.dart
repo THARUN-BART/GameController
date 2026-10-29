@@ -6,6 +6,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/connection_info.dart';
 import '../models/controller_state.dart';
 import '../providers/connection_provider.dart';
+import 'package:flutter/services.dart';
 
 /// Service responsible for the low-latency WebSocket link, token authentication handshake,
 /// heartbeat ping/pong latency measurement, controller input streaming, and automatic reconnection.
@@ -175,6 +176,12 @@ class WebSocketService {
             disconnect(reason: 'pair_rejected');
           }
           break;
+        case 'rumble':
+        final large=json['large'] as int? ?? 0;
+        final small=json['dmall'] as int? ?? 0;
+        _triggerHaptics(large, small);
+        break;
+
 
         case 'pong':
           final clientTs = json['client_ts'] as int? ?? 0;
@@ -381,3 +388,15 @@ final webSocketServiceProvider = Provider<WebSocketService>((ref) {
   ref.onDispose(() => service.dispose());
   return service;
 });
+
+void _triggerHaptics(int large,int small){
+  if(large>150){
+    HapticFeedback.heavyImpact();
+  }
+  else if(large>50 || small >120){
+    HapticFeedback.mediumImpact();
+  }
+  else{
+    HapticFeedback.lightImpact();
+  }
+}

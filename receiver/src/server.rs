@@ -293,18 +293,34 @@ impl ReceiverServer {
             }
         };
 
-        // 3. Authenticated Session Loop with Inactivity Watchdog
+        // 3. Authenticated Session Loop with Inactivity Watchdog & Force Feedback Rumble
         println!("[SESSION] Session active for '{}' ({})", client_name, peer_addr);
+
+        let mut rumble_rx = {
+            let vpad = virtual_pad.lock().await;
+            vpad.subscribe_rumble()
+        };
 
         const WATCHDOG_TIMEOUT_SECS: u64 = 4;
         let mut inactive_watchdog_tripped = false;
+        let sleep_timeout = tokio::time::sleep(Duration::from_secs(WATCHDOG_TIMEOUT_SECS));
+        tokio::pin!(sleep_timeout);
 
         loop {
-            let next_item = timeout(Duration::from_secs(WATCHDOG_TIMEOUT_SECS), read.next()).await;
+            tokio::select! {
+                // Incoming game force feedback / rumble notification from PC game via ViGEmBus
+                Ok((large, small)) = rumble_rx.recv() => {
+                    let rumble_msg = ServerMessage::Rumble { large, small };
+                    if let Ok(json) = serde_json::to_string(&rumble_msg) {
+                        if let Err(e) = write.send(Message::Text(json.into())).await {
+                            eprintln!("[RUMBLE] Failed to send rumble packet to {}: {}", peer_addr, e);
+                            break;
+                        }
+                    }
+                }
 
-            match next_item {
-                Err(_) => {
-                    // 4 seconds without any input or ping from client -> neutralize controller
+                // Inactivity watchdog timeout triggered after 4s without client messages
+                () = &mut sleep_timeout => {
                     if !inactive_watchdog_tripped {
                         println!(
                             "[WATCHDOG] Inactive for >{}s from '{}' ({}): Gamepad neutralized for game safety.",
@@ -316,16 +332,21 @@ impl ReceiverServer {
                         vpad.reset();
                         inactive_watchdog_tripped = true;
                     }
-                    continue;
+                    sleep_timeout.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(WATCHDOG_TIMEOUT_SECS));
                 }
-                Ok(None) => {
-                    println!("[SESSION] Client stream ended for '{}' ({})", client_name, peer_addr);
-                    break;
-                }
-                Ok(Some(msg)) => {
-                    inactive_watchdog_tripped = false;
-                    match msg {
-                        Ok(Message::Text(text)) => {
+
+                // Incoming client messages
+                next_item = read.next() => {
+                    match next_item {
+                        None => {
+                            println!("[SESSION] Client stream ended for '{}' ({})", client_name, peer_addr);
+                            break;
+                        }
+                        Some(Ok(Message::Text(text))) => {
+                            // Reset watchdog deadline on any valid packet from the mobile client
+                            inactive_watchdog_tripped = false;
+                            sleep_timeout.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(WATCHDOG_TIMEOUT_SECS));
+
                             match serde_json::from_str::<ClientMessage>(&text) {
                                 Ok(ClientMessage::Ping { ts }) => {
                                     let now_ms = SystemTime::now()
@@ -407,12 +428,12 @@ impl ReceiverServer {
                                 }
                             }
                         }
-                        Ok(Message::Close(_)) => {
+                        Some(Ok(Message::Close(_))) => {
                             println!("[SESSION] Client '{}' ({}) disconnected cleanly.", client_name, peer_addr);
                             break;
                         }
-                        Ok(_) => {}
-                        Err(e) => {
+                        Some(Ok(_)) => {}
+                        Some(Err(e)) => {
                             eprintln!("[SESSION] Connection error with '{}' ({}): {}", client_name, peer_addr, e);
                             break;
                         }
